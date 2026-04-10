@@ -13,7 +13,7 @@ by noise type:
 
 Cleaners
 --------
-clean_datascope  — rank by Shapley importance, clean most-harmful first
+clean_datascope  — rank true noisy rows by Shapley importance
 clean_cleanlab   — rank by CleanLab self_confidence, clean most-suspicious first
 clean_random     — shuffle noisy positions randomly (baseline)
 """
@@ -88,8 +88,6 @@ def clean_datascope(
         accs.append(accuracy_score(y_test, pipeline.predict(X_test)))
 
     return accs, ranked_noisy
-
-
 # ---------------------------------------------------------------------------
 # CleanLab
 # ---------------------------------------------------------------------------

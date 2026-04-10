@@ -40,7 +40,6 @@ def load_dataset(name: str, datasets_dir) -> DatasetInfo:
     adult   — UCI Adult Income         (protected: sex = Female)
     german  — Statlog German Credit    (protected: personal_status female codes)
     titanic — Titanic survival         (protected: Sex = female)
-    compas  — ProPublica COMPAS        (protected: race = African-American)
     """
     datasets_dir = Path(datasets_dir)
 
@@ -84,36 +83,9 @@ def load_dataset(name: str, datasets_dir) -> DatasetInfo:
         cat_col_names        = list(X_df.select_dtypes(include="object").columns)
         outlier_col, protected_col = "Age", "Sex"
 
-    elif name == "compas":
-        compas_path = datasets_dir / "compas.csv"
-        if not compas_path.exists():
-            raise FileNotFoundError(
-                f"COMPAS dataset not found at {compas_path}.\n"
-                "Download 'compas-scores-two-years.csv' from "
-                "https://github.com/propublica/compas-analysis "
-                "and save it as datasets/compas.csv"
-            )
-        df = pd.read_csv(compas_path)
-        df = df[
-            df["days_b_screening_arrest"].between(-30, 30) &
-            (df["is_recid"] != -1) &
-            (df["c_charge_degree"] != "O") &
-            (df["score_text"] != "N/A")
-        ].copy()
-        y                    = df["two_year_recid"].astype(int).values
-        protected_group_mask = (df["race"] == "African-American").values
-        keep_cols = [
-            "age", "priors_count", "days_b_screening_arrest",
-            "juv_fel_count", "juv_misd_count", "juv_other_count",
-            "c_charge_degree", "race", "sex",
-        ]
-        X_df          = df[keep_cols].copy()
-        cat_col_names = list(X_df.select_dtypes(include="object").columns)
-        outlier_col, protected_col = "priors_count", "race"
-
     else:
         raise ValueError(
-            f"Unknown dataset {name!r}. Choose from: adult, german, titanic, compas"
+            f"Unknown dataset {name!r}. Choose from: adult, german, titanic"
         )
 
     for col in cat_col_names:

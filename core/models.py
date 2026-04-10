@@ -1,6 +1,4 @@
-"""
-Shared dataclasses for label_cleaner service modules.
-"""
+"""Shared dataclasses for label_cleaner service modules."""
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional
@@ -44,3 +42,13 @@ class NoiseBundle:
     noisy_positions: np.ndarray
     metadata: Dict[str, float]
 
+
+@dataclass
+class ExperimentArtifacts:
+    """Detailed experiment outputs for reporting and cleaned-row inspection."""
+    curves: MethodCurves
+    split: PreparedSplit
+    bundle: NoiseBundle
+    datascope_ranked: np.ndarray
+    cleanlab_ranked: np.ndarray
+    random_rankings: List[np.ndarray]

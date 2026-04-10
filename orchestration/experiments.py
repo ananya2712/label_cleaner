@@ -22,7 +22,7 @@ from ..methods.cleaning import (
     clean_random,
 )
 from ..data.datasets import DatasetInfo
-from ..core.models import MethodCurves, NoiseBundle
+from ..core.models import ExperimentArtifacts, MethodCurves, NoiseBundle
 from ..methods.noise import inject_mnar, inject_nnar, inject_outlier, inject_rnd_label
 from ..core.prep import prepare_fixed_split
 
@@ -34,6 +34,16 @@ def _baseline_acc(pipeline_factory: Callable, X_train, y_train, X_test, y_test) 
     p = pipeline_factory()
     p.fit(X_train, y_train)
     return accuracy_score(y_test, p.predict(X_test))
+
+
+def _random_rankings(noisy_positions: np.ndarray, n_seeds: int = 3):
+    rankings = []
+    for seed in range(n_seeds):
+        rng = np.random.RandomState(seed + 100)
+        perm = noisy_positions.copy()
+        rng.shuffle(perm)
+        rankings.append(perm)
+    return rankings
 
 
 def _run_methods(pipeline_factory: Callable, X_train_noisy, y_train_noisy, X_test, y_test,
@@ -79,8 +89,12 @@ def build_noise_bundle_outlier(split, outlier_col_idx: int, noise_level: float,
     )
 
 
-def run_outlier_experiment(ds: DatasetInfo, pipeline_factory: Callable, noise_level: float = 0.2,
-                           proportions: np.ndarray = DEFAULT_PROPORTIONS) -> MethodCurves:
+def run_outlier_experiment_with_artifacts(
+    ds: DatasetInfo,
+    pipeline_factory: Callable,
+    noise_level: float = 0.2,
+    proportions: np.ndarray = DEFAULT_PROPORTIONS,
+) -> ExperimentArtifacts:
     split = prepare_fixed_split(ds.X, ds.y)
     bundle = build_noise_bundle_outlier(split, ds.outlier_col_idx, noise_level=noise_level)
 
@@ -88,7 +102,7 @@ def run_outlier_experiment(ds: DatasetInfo, pipeline_factory: Callable, noise_le
         pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test
     )
     cap_fn = action_cap(ds.outlier_col_idx, bundle.metadata["cap_value"])
-    accs_ds, rnd_mean, rnd_std, accs_cl, ds_ranked, _ = _run_methods(
+    accs_ds, rnd_mean, rnd_std, accs_cl, ds_ranked, cl_ranked = _run_methods(
         pipeline_factory,
         bundle.X_noisy, bundle.y_noisy,
         split.X_test, split.y_test,
@@ -105,7 +119,7 @@ def run_outlier_experiment(ds: DatasetInfo, pipeline_factory: Callable, noise_le
         pipe.fit(X_c, y_c)
         accs_rm.append(accuracy_score(split.y_test, pipe.predict(split.X_test)))
 
-    return MethodCurves(
+    curves = MethodCurves(
         datascope=accs_ds,
         random_mean=rnd_mean,
         random_std=rnd_std,
@@ -114,12 +128,30 @@ def run_outlier_experiment(ds: DatasetInfo, pipeline_factory: Callable, noise_le
         proportions=proportions,
         datascope_removal=accs_rm,
     )
+    return ExperimentArtifacts(
+        curves=curves,
+        split=split,
+        bundle=bundle,
+        datascope_ranked=ds_ranked,
+        cleanlab_ranked=cl_ranked,
+        random_rankings=_random_rankings(bundle.noisy_positions),
+    )
 
 
-def run_random_label_experiment(ds: DatasetInfo, pipeline_factory: Callable,
-                                noise_level: float = 0.2,
-                                proportions: np.ndarray = DEFAULT_PROPORTIONS,
-                                seed: int = 42) -> MethodCurves:
+def run_outlier_experiment(ds: DatasetInfo, pipeline_factory: Callable, noise_level: float = 0.2,
+                           proportions: np.ndarray = DEFAULT_PROPORTIONS) -> MethodCurves:
+    return run_outlier_experiment_with_artifacts(
+        ds, pipeline_factory, noise_level=noise_level, proportions=proportions
+    ).curves
+
+
+def run_random_label_experiment_with_artifacts(
+    ds: DatasetInfo,
+    pipeline_factory: Callable,
+    noise_level: float = 0.2,
+    proportions: np.ndarray = DEFAULT_PROPORTIONS,
+    seed: int = 42,
+) -> ExperimentArtifacts:
     split = prepare_fixed_split(ds.X, ds.y)
     y_noisy, noisy_positions = inject_rnd_label(split.y_train, noise_level=noise_level, seed=seed)
     bundle = NoiseBundle(
@@ -132,22 +164,42 @@ def run_random_label_experiment(ds: DatasetInfo, pipeline_factory: Callable,
         pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test
     )
     restore_fn = action_restore_labels(split.y_train)
-    accs_ds, rnd_mean, rnd_std, accs_cl, _, _ = _run_methods(
+    accs_ds, rnd_mean, rnd_std, accs_cl, ds_ranked, cl_ranked = _run_methods(
         pipeline_factory,
         bundle.X_noisy, bundle.y_noisy,
         split.X_test, split.y_test,
         bundle.noisy_positions, restore_fn, proportions,
     )
-    return MethodCurves(
+    curves = MethodCurves(
         datascope=accs_ds, random_mean=rnd_mean, random_std=rnd_std,
         cleanlab=accs_cl, baseline=baseline, proportions=proportions
     )
+    return ExperimentArtifacts(
+        curves=curves,
+        split=split,
+        bundle=bundle,
+        datascope_ranked=ds_ranked,
+        cleanlab_ranked=cl_ranked,
+        random_rankings=_random_rankings(bundle.noisy_positions),
+    )
 
 
-def run_nnar_experiment(ds: DatasetInfo, pipeline_factory: Callable,
-                        noise_level: float = 0.2,
-                        proportions: np.ndarray = DEFAULT_PROPORTIONS,
-                        seed: int = 42) -> MethodCurves:
+def run_random_label_experiment(ds: DatasetInfo, pipeline_factory: Callable,
+                                noise_level: float = 0.2,
+                                proportions: np.ndarray = DEFAULT_PROPORTIONS,
+                                seed: int = 42) -> MethodCurves:
+    return run_random_label_experiment_with_artifacts(
+        ds, pipeline_factory, noise_level=noise_level, proportions=proportions, seed=seed
+    ).curves
+
+
+def run_nnar_experiment_with_artifacts(
+    ds: DatasetInfo,
+    pipeline_factory: Callable,
+    noise_level: float = 0.2,
+    proportions: np.ndarray = DEFAULT_PROPORTIONS,
+    seed: int = 42,
+) -> ExperimentArtifacts:
     split = prepare_fixed_split(ds.X, ds.y)
     protected_train = ds.protected_group_mask[split.train_idx]
     y_noisy, noisy_positions = inject_nnar(
@@ -163,22 +215,42 @@ def run_nnar_experiment(ds: DatasetInfo, pipeline_factory: Callable,
         pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test
     )
     restore_fn = action_restore_labels(split.y_train)
-    accs_ds, rnd_mean, rnd_std, accs_cl, _, _ = _run_methods(
+    accs_ds, rnd_mean, rnd_std, accs_cl, ds_ranked, cl_ranked = _run_methods(
         pipeline_factory,
         bundle.X_noisy, bundle.y_noisy,
         split.X_test, split.y_test,
         bundle.noisy_positions, restore_fn, proportions,
     )
-    return MethodCurves(
+    curves = MethodCurves(
         datascope=accs_ds, random_mean=rnd_mean, random_std=rnd_std,
         cleanlab=accs_cl, baseline=baseline, proportions=proportions
     )
+    return ExperimentArtifacts(
+        curves=curves,
+        split=split,
+        bundle=bundle,
+        datascope_ranked=ds_ranked,
+        cleanlab_ranked=cl_ranked,
+        random_rankings=_random_rankings(bundle.noisy_positions),
+    )
 
 
-def run_mnar_experiment(ds: DatasetInfo, pipeline_factory: Callable,
+def run_nnar_experiment(ds: DatasetInfo, pipeline_factory: Callable,
                         noise_level: float = 0.2,
                         proportions: np.ndarray = DEFAULT_PROPORTIONS,
                         seed: int = 42) -> MethodCurves:
+    return run_nnar_experiment_with_artifacts(
+        ds, pipeline_factory, noise_level=noise_level, proportions=proportions, seed=seed
+    ).curves
+
+
+def run_mnar_experiment_with_artifacts(
+    ds: DatasetInfo,
+    pipeline_factory: Callable,
+    noise_level: float = 0.2,
+    proportions: np.ndarray = DEFAULT_PROPORTIONS,
+    seed: int = 42,
+) -> ExperimentArtifacts:
     split = prepare_fixed_split(ds.X, ds.y)
     protected_train = ds.protected_group_mask[split.train_idx]
     X_noisy, noisy_positions = inject_mnar(
@@ -195,13 +267,30 @@ def run_mnar_experiment(ds: DatasetInfo, pipeline_factory: Callable,
     )
     # Feature corruption is not directly restorable; label flip is the comparison action.
     flip_fn = action_flip_labels()
-    accs_ds, rnd_mean, rnd_std, accs_cl, _, _ = _run_methods(
+    accs_ds, rnd_mean, rnd_std, accs_cl, ds_ranked, cl_ranked = _run_methods(
         pipeline_factory,
         bundle.X_noisy, bundle.y_noisy,
         split.X_test, split.y_test,
         bundle.noisy_positions, flip_fn, proportions,
     )
-    return MethodCurves(
+    curves = MethodCurves(
         datascope=accs_ds, random_mean=rnd_mean, random_std=rnd_std,
         cleanlab=accs_cl, baseline=baseline, proportions=proportions
     )
+    return ExperimentArtifacts(
+        curves=curves,
+        split=split,
+        bundle=bundle,
+        datascope_ranked=ds_ranked,
+        cleanlab_ranked=cl_ranked,
+        random_rankings=_random_rankings(bundle.noisy_positions),
+    )
+
+
+def run_mnar_experiment(ds: DatasetInfo, pipeline_factory: Callable,
+                        noise_level: float = 0.2,
+                        proportions: np.ndarray = DEFAULT_PROPORTIONS,
+                        seed: int = 42) -> MethodCurves:
+    return run_mnar_experiment_with_artifacts(
+        ds, pipeline_factory, noise_level=noise_level, proportions=proportions, seed=seed
+    ).curves
