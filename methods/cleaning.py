@@ -24,6 +24,8 @@ import numpy as np
 from cleanlab.filter import find_label_issues
 from datascope.importance import SklearnModelAccuracy
 from datascope.importance.shapley import ImportanceMethod, ShapleyImportance
+from scipy.optimize import brentq
+from scipy.stats import beta as beta_dist
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 from sklearn.metrics.pairwise import rbf_kernel
@@ -156,6 +158,173 @@ def clean_cleanlab(
 
 
 # ---------------------------------------------------------------------------
+# Beta Mixture Model threshold helper
+# ---------------------------------------------------------------------------
+
+def _bmm_threshold(scores: np.ndarray, n_iter: int = 100, tol: float = 1e-6) -> float:
+    """
+    Fit a 2-component Beta Mixture Model to `scores` via EM and return the
+    crossing point of the two component PDFs as the correction threshold.
+
+    The low-mean component captures noisy/unrecoverable samples (→ remove).
+    The high-mean component captures moderately suspicious ones (→ correct).
+    Brent's method finds the root of pdf_low(x) - pdf_high(x) on the interval
+    between the two component means.
+
+    Falls back to the median if the mixture degenerates or the root search fails.
+    """
+    scores = np.clip(scores, 1e-6, 1 - 1e-6)
+    n = len(scores)
+
+    # --- initialise two components by splitting at the median ---
+    med = float(np.median(scores))
+    params = []
+    for subset in [scores[scores <= med], scores[scores > med]]:
+        if len(subset) < 2:
+            subset = scores
+        mu  = float(np.clip(np.mean(subset), 0.01, 0.99))
+        var = float(np.clip(np.var(subset),  1e-6, mu * (1 - mu) - 1e-6))
+        fac = mu * (1 - mu) / var - 1
+        params.append([max(fac * mu, 0.1), max(fac * (1 - mu), 0.1)])
+
+    alphas  = np.array([p[0] for p in params])
+    betas_  = np.array([p[1] for p in params])
+    weights = np.array([0.5, 0.5])
+
+    prev_ll = -np.inf
+    for _ in range(n_iter):
+        # E-step
+        resp = np.column_stack([
+            weights[k] * beta_dist.pdf(scores, alphas[k], betas_[k])
+            for k in range(2)
+        ])
+        row_sum = resp.sum(axis=1, keepdims=True)
+        row_sum = np.where(row_sum < 1e-300, 1e-300, row_sum)
+        resp /= row_sum
+
+        # M-step
+        Nk = resp.sum(axis=0)
+        weights = Nk / n
+        for k in range(2):
+            mu_k  = float(np.clip((resp[:, k] * scores).sum() / Nk[k], 0.01, 0.99))
+            var_k = float(np.clip((resp[:, k] * (scores - mu_k) ** 2).sum() / Nk[k],
+                                  1e-6, mu_k * (1 - mu_k) - 1e-6))
+            fac = mu_k * (1 - mu_k) / var_k - 1
+            alphas[k]  = max(fac * mu_k,        0.1)
+            betas_[k]  = max(fac * (1 - mu_k),  0.1)
+
+        ll = float(np.log(row_sum).sum())
+        if abs(ll - prev_ll) < tol:
+            break
+        prev_ll = ll
+
+    # component means
+    means = alphas / (alphas + betas_)
+    lo, hi = int(np.argmin(means)), int(np.argmax(means))
+
+    if means[lo] >= means[hi]:          # degenerate — fall back
+        return float(np.median(scores))
+
+    def _diff(x: float) -> float:
+        return (weights[lo] * float(beta_dist.pdf(x, alphas[lo], betas_[lo])) -
+                weights[hi] * float(beta_dist.pdf(x, alphas[hi], betas_[hi])))
+
+    # bracket must straddle zero; if it doesn't, the distributions overlap heavily
+    lo_bound = float(means[lo]) + 0.01
+    hi_bound = float(means[hi]) - 0.01
+    if lo_bound >= hi_bound or _diff(lo_bound) * _diff(hi_bound) > 0:
+        return float(np.median(scores))
+
+    try:
+        return float(brentq(_diff, lo_bound, hi_bound))
+    except ValueError:
+        return float(np.median(scores))
+
+
+# ---------------------------------------------------------------------------
+# Adaptive CleanLab (correction vs. filtering)
+# ---------------------------------------------------------------------------
+
+def clean_cleanlab_adaptive(
+    pipeline_factory: Callable,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    action_fn: Callable,
+    proportions: np.ndarray,
+    n_jobs: int = 1,
+) -> Tuple[List[float], np.ndarray]:
+    """
+    Adaptive CleanLab: uses self_confidence scores to decide per-sample action.
+
+    For each flagged sample in the top-k at cleaning proportion p:
+      - self_confidence < correction_threshold  → apply action_fn (correct the label/feature)
+      - self_confidence >= correction_threshold → remove the sample entirely
+
+    Rationale: samples with higher self_confidence (upper half) are moderately
+    suspicious — the model still has some belief in their label, so correction
+    is the safer action. Samples with very low self_confidence (lower half) are
+    highly uncertain and removing them avoids introducing wrong corrections.
+
+    Parameters
+    ----------
+    action_fn            : noise-type-specific correction (cap / restore / flip)
+    correction_threshold : self_confidence cutoff; samples below this get corrected,
+                           samples at or above get removed (default 0.5)
+
+    Returns
+    -------
+    accs      : accuracy at each proportion
+    cl_ranked : training indices ranked most-to-least suspicious (same as clean_cleanlab)
+    """
+    pipeline   = pipeline_factory()
+    pred_probs = cross_val_predict(
+        pipeline, X_train, y_train,
+        cv=5, method="predict_proba", n_jobs=n_jobs,
+    )
+    cl_ranked = find_label_issues(
+        labels=y_train,
+        pred_probs=pred_probs,
+        return_indices_ranked_by="self_confidence",
+        n_jobs=n_jobs,
+    )
+    # self_confidence[i] = P(current label is correct | x_i)
+    self_conf = pred_probs[np.arange(len(y_train)), y_train]
+
+    # Fit a 2-component Beta Mixture Model to the self_confidence scores of all
+    # CleanLab-flagged samples and use the crossing point of the two component
+    # PDFs as the split threshold.
+    #
+    # Low-mean component  → highly suspicious samples  → remove
+    # High-mean component → moderately suspicious ones → correct via action_fn
+    #
+    # Falls back to the median when the two components overlap heavily or the
+    # mixture degenerates (e.g., very few flagged samples).
+    adaptive_threshold = _bmm_threshold(self_conf[cl_ranked])
+
+    accs = []
+    for p in proportions:
+        n_clean    = int(p * len(cl_ranked))
+        top_k      = cl_ranked[:n_clean]
+        to_correct = top_k[self_conf[top_k] >= adaptive_threshold]
+        to_remove  = top_k[self_conf[top_k] <  adaptive_threshold]
+
+        # Apply correction first (preserves array size), then filter rows
+        X_c, y_c = action_fn(X_train, y_train, to_correct)
+        if len(to_remove) > 0:
+            keep       = np.ones(len(X_c), dtype=bool)
+            keep[to_remove] = False
+            X_c, y_c  = X_c[keep], y_c[keep]
+
+        pipeline = pipeline_factory()
+        pipeline.fit(X_c, y_c)
+        accs.append(accuracy_score(y_test, pipeline.predict(X_test)))
+
+    return accs, cl_ranked
+
+
+# ---------------------------------------------------------------------------
 # Random baseline
 # ---------------------------------------------------------------------------
 
@@ -223,6 +392,7 @@ def _kairos_scores(
     y_val: np.ndarray,
     lambda_weight: float = 0.97,
     sigma_feature: float = 3.0,
+    max_kernel_samples: int = 2000,
 ) -> np.ndarray:
     """
     Compute per-sample Kairos data values (Lodino et al., NeurIPS 2025).
@@ -236,12 +406,21 @@ def _kairos_scores(
 
     Final value = lambda_weight * feature_score + (1 - lambda_weight) * residual_score.
     Lower value → more likely noisy.
+
+    For large datasets the full n×n kernel matrix is infeasible. Reference sets
+    are capped at max_kernel_samples / 500 rows respectively to keep memory
+    and compute tractable while preserving a good distribution estimate.
     """
     gamma = 1.0 / (2.0 * sigma_feature ** 2)
+    rng   = np.random.RandomState(42)
 
-    # Feature scores
-    K_tv = rbf_kernel(X_train, X_val,   gamma=gamma)   # (n_train, n_val)
-    K_tt = rbf_kernel(X_train, X_train, gamma=gamma)   # (n_train, n_train)
+    # Subsample reference sets so kernel matrices stay manageable
+    val_ref = X_val[rng.choice(len(X_val),   size=min(len(X_val),   500),              replace=False)]
+    trn_ref = X_train[rng.choice(len(X_train), size=min(len(X_train), max_kernel_samples), replace=False)]
+
+    # Feature scores: how similar each training sample is to val vs. train distribution
+    K_tv = rbf_kernel(X_train, val_ref, gamma=gamma)  # (n_train, n_val_ref)
+    K_tt = rbf_kernel(X_train, trn_ref, gamma=gamma)  # (n_train, n_trn_ref)
     feature_scores = K_tv.mean(axis=1) - K_tt.mean(axis=1)
 
     # Residual scores

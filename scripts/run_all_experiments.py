@@ -233,6 +233,7 @@ def _curves_from_cache(cache_dir: Path) -> MethodCurves:
         proportions=np.array(c["proportions"]),
         datascope_removal=c.get("datascope_removal"),
         kairos=c.get("kairos"),
+        cleanlab_adaptive=c.get("cleanlab_adaptive"),
     )
 
 
@@ -254,6 +255,9 @@ def _plot_curves(path: Path, dataset: str, noise_type: str, pipeline_key: str, c
     if curves.kairos is not None:
         ax.plot(proportions_pct, curves.kairos,
                 color="#9467bd", linestyle="-", linewidth=1.8, label="Kairos")
+    if curves.cleanlab_adaptive is not None:
+        ax.plot(proportions_pct, curves.cleanlab_adaptive,
+                color="#8c1717", linestyle="-.", linewidth=1.8, label="CleanLab-Adaptive")
     if curves.datascope_removal is not None:
         ax.plot(proportions_pct, curves.datascope_removal,
                 color="#2ca02c", linestyle="-", linewidth=1.4, label="DS removal")
@@ -299,12 +303,16 @@ def _plot_grid(
             ax.axhline(curves.baseline,  color="#ff7f0e", linestyle="--", linewidth=1.0, label="Baseline")
             if curves.kairos is not None:
                 ax.plot(x, curves.kairos, color="#9467bd", linestyle="-", linewidth=1.8, label="Kairos")
+            if curves.cleanlab_adaptive is not None:
+                ax.plot(x, curves.cleanlab_adaptive, color="#8c1717", linestyle="-.", linewidth=1.8, label="CleanLab-Adaptive")
             if curves.datascope_removal is not None:
                 ax.plot(x, curves.datascope_removal, color="#2ca02c", linestyle="-", linewidth=1.4, label="DS removal")
 
             all_y = [*curves.datascope, *curves.cleanlab, *rnd_mean, curves.baseline]
             if curves.kairos is not None:
                 all_y.extend(curves.kairos)
+            if curves.cleanlab_adaptive is not None:
+                all_y.extend(curves.cleanlab_adaptive)
             if curves.datascope_removal is not None:
                 all_y.extend(curves.datascope_removal)
             y_min, y_max = min(all_y), max(all_y)
@@ -325,6 +333,10 @@ def _plot_grid(
             ]
             if curves.kairos is not None:
                 final_labels.append(f"Kairos: {curves.kairos[-1]:.3f}")
+            if curves.cleanlab_adaptive is not None:
+                final_labels.append(f"CL-Adaptive: {curves.cleanlab_adaptive[-1]:.3f}")
+            if curves.datascope_removal is not None:
+                final_labels.append(f"DS removal: {curves.datascope_removal[-1]:.3f}")
             n_legend = len(final_labels)
             ax.legend(ax.get_lines()[:n_legend], final_labels,
                       fontsize=5.5, loc="upper left", framealpha=0.8,
