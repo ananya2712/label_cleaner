@@ -27,6 +27,7 @@ class MethodCurves:
     baseline: float
     proportions: np.ndarray
     datascope_removal: Optional[List[float]] = None
+    kairos: Optional[List[float]] = None
 
 
 @dataclass
@@ -52,3 +53,4 @@ class ExperimentArtifacts:
     datascope_ranked: np.ndarray
     cleanlab_ranked: np.ndarray
     random_rankings: List[np.ndarray]
+    kairos_ranked: np.ndarray = None

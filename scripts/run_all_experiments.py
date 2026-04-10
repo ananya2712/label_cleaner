@@ -28,6 +28,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from datascope.importance.shapley import ImportanceMethod
 from label_cleaner.core.models import MethodCurves
 from label_cleaner.data.datasets import load_dataset
 from label_cleaner.orchestration.catalog import pipeline_factory_a, pipeline_factory_b
@@ -98,6 +99,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip experiments; load curves from existing cache and regenerate figures only.",
     )
+    parser.add_argument(
+        "--mc-iterations",
+        type=int,
+        default=50,
+        help="Monte Carlo iterations for MONTECARLO ImportanceMethod (p2b). Default: 50.",
+    )
     return parser.parse_args()
 
 
@@ -111,6 +118,12 @@ def _pipeline_factory(ds, pipeline_key: str):
     if pipeline_key == "p2b":
         return pipeline_factory_b(n_features=ds.X.shape[1])
     raise ValueError(f"Unsupported pipeline key: {pipeline_key!r}")
+
+
+def _importance_method(pipeline_key: str) -> ImportanceMethod:
+    # p2b uses a non-KNN model (PCA + SelectKBest + LogisticRegression), so TMC
+    # Shapley is a better fit than the NEIGHBOR approximation used for p1a.
+    return ImportanceMethod.NEIGHBOR
 
 
 def _cleaned_prefix(ranked: np.ndarray, proportion: float) -> np.ndarray:
@@ -219,6 +232,7 @@ def _curves_from_cache(cache_dir: Path) -> MethodCurves:
         baseline=c["baseline"],
         proportions=np.array(c["proportions"]),
         datascope_removal=c.get("datascope_removal"),
+        kairos=c.get("kairos"),
     )
 
 
@@ -237,6 +251,9 @@ def _plot_curves(path: Path, dataset: str, noise_type: str, pipeline_key: str, c
     ax.fill_between(proportions_pct, rnd_mean - rnd_std, rnd_mean + rnd_std,
                     color="#ff7f0e", alpha=0.25, label="±1σ Random")
     ax.axhline(curves.baseline, color="#ff7f0e", linestyle="--", linewidth=1.0, label="Baseline")
+    if curves.kairos is not None:
+        ax.plot(proportions_pct, curves.kairos,
+                color="#9467bd", linestyle="-", linewidth=1.8, label="Kairos")
     if curves.datascope_removal is not None:
         ax.plot(proportions_pct, curves.datascope_removal,
                 color="#2ca02c", linestyle="-", linewidth=1.4, label="DS removal")
@@ -280,10 +297,14 @@ def _plot_grid(
             ax.plot(x, rnd_mean,         color="#ff7f0e", linestyle="--", linewidth=1.4, label="Random")
             ax.fill_between(x, rnd_mean - rnd_std, rnd_mean + rnd_std, color="#ff7f0e", alpha=0.25)
             ax.axhline(curves.baseline,  color="#ff7f0e", linestyle="--", linewidth=1.0, label="Baseline")
+            if curves.kairos is not None:
+                ax.plot(x, curves.kairos, color="#9467bd", linestyle="-", linewidth=1.8, label="Kairos")
             if curves.datascope_removal is not None:
                 ax.plot(x, curves.datascope_removal, color="#2ca02c", linestyle="-", linewidth=1.4, label="DS removal")
 
             all_y = [*curves.datascope, *curves.cleanlab, *rnd_mean, curves.baseline]
+            if curves.kairos is not None:
+                all_y.extend(curves.kairos)
             if curves.datascope_removal is not None:
                 all_y.extend(curves.datascope_removal)
             y_min, y_max = min(all_y), max(all_y)
@@ -302,7 +323,10 @@ def _plot_grid(
                 f"Random: {rnd_mean[-1]:.3f}",
                 f"Baseline: {curves.baseline:.3f}",
             ]
-            ax.legend(ax.get_lines()[:4], final_labels,
+            if curves.kairos is not None:
+                final_labels.append(f"Kairos: {curves.kairos[-1]:.3f}")
+            n_legend = len(final_labels)
+            ax.legend(ax.get_lines()[:n_legend], final_labels,
                       fontsize=5.5, loc="upper left", framealpha=0.8,
                       handlelength=1.4, handletextpad=0.4)
 
@@ -316,7 +340,7 @@ def _plot_grid(
     noise_pct = int(noise_level * 100)
     fig.suptitle(
         f"All Noise Types — {dataset.upper()} (noise_level={noise_pct}%)\n"
-        "Blue=Datascope, Red dashed=CleanLab, Orange dashed=Random baseline (\u00b11\u03c3 shaded)",
+        "Blue=DataScope, Red dashed=CleanLab, Orange dashed=Random (\u00b11\u03c3 shaded), Purple=Kairos",
         fontsize=10, y=1.01,
     )
     fig.tight_layout()
@@ -374,6 +398,8 @@ def main() -> int:
                     pipeline_factory=pipeline_factory,
                     noise_level=args.noise_level,
                     proportions=proportions,
+                    importance_method=_importance_method(pipeline_key),
+                    mc_iterations=args.mc_iterations,
                 )
                 cleaned_cache = _cleaned_cache(artifacts, proportions)
                 train_rows = _record_rows(ds, artifacts)

@@ -10,6 +10,7 @@ Each run_* function orchestrates:
 from typing import Callable
 
 import numpy as np
+from datascope.importance.shapley import ImportanceMethod
 from sklearn.metrics import accuracy_score
 
 from ..methods.cleaning import (
@@ -19,6 +20,7 @@ from ..methods.cleaning import (
     action_restore_labels,
     clean_cleanlab,
     clean_datascope,
+    clean_kairos,
     clean_random,
 )
 from ..data.datasets import DatasetInfo
@@ -47,10 +49,13 @@ def _random_rankings(noisy_positions: np.ndarray, n_seeds: int = 3):
 
 
 def _run_methods(pipeline_factory: Callable, X_train_noisy, y_train_noisy, X_test, y_test,
-                 noisy_positions, action_fn, proportions, n_cleanlab_jobs: int = 1):
+                 noisy_positions, action_fn, proportions, n_cleanlab_jobs: int = 1,
+                 importance_method: ImportanceMethod = ImportanceMethod.NEIGHBOR,
+                 mc_iterations: int = 50):
     accs_ds, ds_ranked = clean_datascope(
         pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
-        noisy_positions, action_fn, proportions
+        noisy_positions, action_fn, proportions,
+        importance_method=importance_method, mc_iterations=mc_iterations,
     )
     rnd_mean, rnd_std = clean_random(
         pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
@@ -60,7 +65,11 @@ def _run_methods(pipeline_factory: Callable, X_train_noisy, y_train_noisy, X_tes
         pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
         action_fn, proportions, n_jobs=n_cleanlab_jobs
     )
-    return accs_ds, rnd_mean, rnd_std, accs_cl, ds_ranked, cl_ranked
+    accs_kr, kr_ranked = clean_kairos(
+        pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
+        action_fn, proportions,
+    )
+    return accs_ds, rnd_mean, rnd_std, accs_cl, accs_kr, ds_ranked, cl_ranked, kr_ranked
 
 
 def build_noise_bundle_outlier(split, outlier_col_idx: int, noise_level: float,
@@ -94,6 +103,8 @@ def run_outlier_experiment_with_artifacts(
     pipeline_factory: Callable,
     noise_level: float = 0.2,
     proportions: np.ndarray = DEFAULT_PROPORTIONS,
+    importance_method: ImportanceMethod = ImportanceMethod.NEIGHBOR,
+    mc_iterations: int = 50,
 ) -> ExperimentArtifacts:
     split = prepare_fixed_split(ds.X, ds.y)
     bundle = build_noise_bundle_outlier(split, ds.outlier_col_idx, noise_level=noise_level)
@@ -102,11 +113,12 @@ def run_outlier_experiment_with_artifacts(
         pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test
     )
     cap_fn = action_cap(ds.outlier_col_idx, bundle.metadata["cap_value"])
-    accs_ds, rnd_mean, rnd_std, accs_cl, ds_ranked, cl_ranked = _run_methods(
+    accs_ds, rnd_mean, rnd_std, accs_cl, accs_kr, ds_ranked, cl_ranked, kr_ranked = _run_methods(
         pipeline_factory,
         bundle.X_noisy, bundle.y_noisy,
         split.X_test, split.y_test,
         bundle.noisy_positions, cap_fn, proportions,
+        importance_method=importance_method, mc_iterations=mc_iterations,
     )
 
     # Outlier-specific removal curve (drop top-k DataScope-ranked noisy rows)
@@ -127,6 +139,7 @@ def run_outlier_experiment_with_artifacts(
         baseline=baseline,
         proportions=proportions,
         datascope_removal=accs_rm,
+        kairos=accs_kr,
     )
     return ExperimentArtifacts(
         curves=curves,
@@ -135,6 +148,7 @@ def run_outlier_experiment_with_artifacts(
         datascope_ranked=ds_ranked,
         cleanlab_ranked=cl_ranked,
         random_rankings=_random_rankings(bundle.noisy_positions),
+        kairos_ranked=kr_ranked,
     )
 
 
@@ -151,6 +165,8 @@ def run_random_label_experiment_with_artifacts(
     noise_level: float = 0.2,
     proportions: np.ndarray = DEFAULT_PROPORTIONS,
     seed: int = 42,
+    importance_method: ImportanceMethod = ImportanceMethod.NEIGHBOR,
+    mc_iterations: int = 50,
 ) -> ExperimentArtifacts:
     split = prepare_fixed_split(ds.X, ds.y)
     y_noisy, noisy_positions = inject_rnd_label(split.y_train, noise_level=noise_level, seed=seed)
@@ -164,15 +180,17 @@ def run_random_label_experiment_with_artifacts(
         pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test
     )
     restore_fn = action_restore_labels(split.y_train)
-    accs_ds, rnd_mean, rnd_std, accs_cl, ds_ranked, cl_ranked = _run_methods(
+    accs_ds, rnd_mean, rnd_std, accs_cl, accs_kr, ds_ranked, cl_ranked, kr_ranked = _run_methods(
         pipeline_factory,
         bundle.X_noisy, bundle.y_noisy,
         split.X_test, split.y_test,
         bundle.noisy_positions, restore_fn, proportions,
+        importance_method=importance_method, mc_iterations=mc_iterations,
     )
     curves = MethodCurves(
         datascope=accs_ds, random_mean=rnd_mean, random_std=rnd_std,
-        cleanlab=accs_cl, baseline=baseline, proportions=proportions
+        cleanlab=accs_cl, baseline=baseline, proportions=proportions,
+        kairos=accs_kr,
     )
     return ExperimentArtifacts(
         curves=curves,
@@ -181,6 +199,7 @@ def run_random_label_experiment_with_artifacts(
         datascope_ranked=ds_ranked,
         cleanlab_ranked=cl_ranked,
         random_rankings=_random_rankings(bundle.noisy_positions),
+        kairos_ranked=kr_ranked,
     )
 
 
@@ -199,6 +218,8 @@ def run_nnar_experiment_with_artifacts(
     noise_level: float = 0.2,
     proportions: np.ndarray = DEFAULT_PROPORTIONS,
     seed: int = 42,
+    importance_method: ImportanceMethod = ImportanceMethod.NEIGHBOR,
+    mc_iterations: int = 50,
 ) -> ExperimentArtifacts:
     split = prepare_fixed_split(ds.X, ds.y)
     protected_train = ds.protected_group_mask[split.train_idx]
@@ -215,15 +236,17 @@ def run_nnar_experiment_with_artifacts(
         pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test
     )
     restore_fn = action_restore_labels(split.y_train)
-    accs_ds, rnd_mean, rnd_std, accs_cl, ds_ranked, cl_ranked = _run_methods(
+    accs_ds, rnd_mean, rnd_std, accs_cl, accs_kr, ds_ranked, cl_ranked, kr_ranked = _run_methods(
         pipeline_factory,
         bundle.X_noisy, bundle.y_noisy,
         split.X_test, split.y_test,
         bundle.noisy_positions, restore_fn, proportions,
+        importance_method=importance_method, mc_iterations=mc_iterations,
     )
     curves = MethodCurves(
         datascope=accs_ds, random_mean=rnd_mean, random_std=rnd_std,
-        cleanlab=accs_cl, baseline=baseline, proportions=proportions
+        cleanlab=accs_cl, baseline=baseline, proportions=proportions,
+        kairos=accs_kr,
     )
     return ExperimentArtifacts(
         curves=curves,
@@ -232,6 +255,7 @@ def run_nnar_experiment_with_artifacts(
         datascope_ranked=ds_ranked,
         cleanlab_ranked=cl_ranked,
         random_rankings=_random_rankings(bundle.noisy_positions),
+        kairos_ranked=kr_ranked,
     )
 
 
@@ -250,6 +274,8 @@ def run_mnar_experiment_with_artifacts(
     noise_level: float = 0.2,
     proportions: np.ndarray = DEFAULT_PROPORTIONS,
     seed: int = 42,
+    importance_method: ImportanceMethod = ImportanceMethod.NEIGHBOR,
+    mc_iterations: int = 50,
 ) -> ExperimentArtifacts:
     split = prepare_fixed_split(ds.X, ds.y)
     protected_train = ds.protected_group_mask[split.train_idx]
@@ -267,15 +293,17 @@ def run_mnar_experiment_with_artifacts(
     )
     # Feature corruption is not directly restorable; label flip is the comparison action.
     flip_fn = action_flip_labels()
-    accs_ds, rnd_mean, rnd_std, accs_cl, ds_ranked, cl_ranked = _run_methods(
+    accs_ds, rnd_mean, rnd_std, accs_cl, accs_kr, ds_ranked, cl_ranked, kr_ranked = _run_methods(
         pipeline_factory,
         bundle.X_noisy, bundle.y_noisy,
         split.X_test, split.y_test,
         bundle.noisy_positions, flip_fn, proportions,
+        importance_method=importance_method, mc_iterations=mc_iterations,
     )
     curves = MethodCurves(
         datascope=accs_ds, random_mean=rnd_mean, random_std=rnd_std,
-        cleanlab=accs_cl, baseline=baseline, proportions=proportions
+        cleanlab=accs_cl, baseline=baseline, proportions=proportions,
+        kairos=accs_kr,
     )
     return ExperimentArtifacts(
         curves=curves,
@@ -284,6 +312,7 @@ def run_mnar_experiment_with_artifacts(
         datascope_ranked=ds_ranked,
         cleanlab_ranked=cl_ranked,
         random_rankings=_random_rankings(bundle.noisy_positions),
+        kairos_ranked=kr_ranked,
     )
 
 

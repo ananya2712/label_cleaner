@@ -24,7 +24,9 @@ import numpy as np
 from cleanlab.filter import find_label_issues
 from datascope.importance import SklearnModelAccuracy
 from datascope.importance.shapley import ImportanceMethod, ShapleyImportance
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
+from sklearn.metrics.pairwise import rbf_kernel
 from sklearn.model_selection import cross_val_predict
 
 
@@ -32,14 +34,19 @@ from sklearn.model_selection import cross_val_predict
 # DataScope
 # ---------------------------------------------------------------------------
 
-def _compute_importances(pipeline, X_train, y_train, X_test, y_test) -> np.ndarray:
+def _compute_importances(
+    pipeline, X_train, y_train, X_test, y_test,
+    importance_method: ImportanceMethod = ImportanceMethod.NEIGHBOR,
+    mc_iterations: int = 50,
+) -> np.ndarray:
     """Compute per-sample Shapley importance scores. Pipeline must be already fitted."""
     utility       = SklearnModelAccuracy(pipeline[-1])
     feature_pipes = pipeline[:-1]
     imp = ShapleyImportance(
-        method=ImportanceMethod.NEIGHBOR,
+        method=importance_method,
         pipeline=feature_pipes,
         utility=utility,
+        mc_iterations=mc_iterations,
     )
     return imp.fit(X_train, y_train).score(X_test, y_test)
 
@@ -53,6 +60,8 @@ def clean_datascope(
     noisy_positions: np.ndarray,
     action_fn: Callable,
     proportions: np.ndarray,
+    importance_method: ImportanceMethod = ImportanceMethod.NEIGHBOR,
+    mc_iterations: int = 50,
 ) -> Tuple[List[float], np.ndarray]:
     """
     DataScope cleaning: rank noisy samples by Shapley importance (most harmful
@@ -76,7 +85,7 @@ def clean_datascope(
     pipeline = pipeline_factory()
     pipeline.fit(X_train, y_train)
 
-    importances  = _compute_importances(pipeline, X_train, y_train, X_test, y_test)
+    importances  = _compute_importances(pipeline, X_train, y_train, X_test, y_test, importance_method, mc_iterations)
     sorted_order = np.argsort(-importances[noisy_positions])
     ranked_noisy = noisy_positions[sorted_order]
 
@@ -201,6 +210,99 @@ def clean_random(
 
     arr = np.array(all_accs)
     return arr.mean(axis=0).tolist(), arr.std(axis=0).tolist()
+
+
+# ---------------------------------------------------------------------------
+# Kairos
+# ---------------------------------------------------------------------------
+
+def _kairos_scores(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_val: np.ndarray,
+    y_val: np.ndarray,
+    lambda_weight: float = 0.97,
+    sigma_feature: float = 3.0,
+) -> np.ndarray:
+    """
+    Compute per-sample Kairos data values (Lodino et al., NeurIPS 2025).
+
+    Combines two signals:
+      - Feature score: RBF kernel similarity of each training sample to the
+        validation distribution minus its similarity to the training distribution.
+        Higher = more representative of validation = more valuable.
+      - Residual score: P(correct label | x_i) from a logistic regression
+        trained on the validation set. Higher = label consistent with val = clean.
+
+    Final value = lambda_weight * feature_score + (1 - lambda_weight) * residual_score.
+    Lower value → more likely noisy.
+    """
+    gamma = 1.0 / (2.0 * sigma_feature ** 2)
+
+    # Feature scores
+    K_tv = rbf_kernel(X_train, X_val,   gamma=gamma)   # (n_train, n_val)
+    K_tt = rbf_kernel(X_train, X_train, gamma=gamma)   # (n_train, n_train)
+    feature_scores = K_tv.mean(axis=1) - K_tt.mean(axis=1)
+
+    # Residual scores
+    clf = LogisticRegression(max_iter=1000, random_state=0)
+    try:
+        clf.fit(X_val, y_val)
+        proba = clf.predict_proba(X_train)             # (n_train, n_classes)
+        class_idx = {c: i for i, c in enumerate(clf.classes_)}
+        residual_scores = proba[
+            np.arange(len(y_train)),
+            [class_idx[y] for y in y_train],
+        ]
+    except Exception:
+        residual_scores = np.full(len(y_train), 0.5)
+
+    return lambda_weight * feature_scores + (1.0 - lambda_weight) * residual_scores
+
+
+def clean_kairos(
+    pipeline_factory: Callable,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    action_fn: Callable,
+    proportions: np.ndarray,
+    lambda_weight: float = 0.97,
+    sigma_feature: float = 3.0,
+) -> Tuple[List[float], np.ndarray]:
+    """
+    Kairos cleaning: rank all training samples by ascending data value
+    (most harmful / lowest value first), then incrementally apply `action_fn`.
+
+    X_test / y_test are used for both Kairos scoring and accuracy evaluation,
+    consistent with how DataScope uses the test set for Shapley importance scoring.
+
+    Returns
+    -------
+    accs         : accuracy at each cleaning proportion
+    kairos_ranked: all training indices sorted most-harmful first
+    """
+    # Fit pipeline on full noisy training data, then transform through feature
+    # steps only (pipeline[:-1]) so the kernel operates on clean numeric features.
+    pipeline = pipeline_factory()
+    pipeline.fit(X_train, y_train)
+    feature_pipe = pipeline[:-1]
+    X_train_t = feature_pipe.transform(X_train)
+    X_test_t  = feature_pipe.transform(X_test)
+
+    scores = _kairos_scores(X_train_t, y_train, X_test_t, y_test, lambda_weight, sigma_feature)
+    kairos_ranked = np.argsort(scores)   # ascending: lowest value = noisiest first
+
+    accs = []
+    for p in proportions:
+        n_clean  = int(p * len(kairos_ranked))
+        X_c, y_c = action_fn(X_train, y_train, kairos_ranked[:n_clean])
+        pipeline = pipeline_factory()
+        pipeline.fit(X_c, y_c)
+        accs.append(accuracy_score(y_test, pipeline.predict(X_test)))
+
+    return accs, kairos_ranked
 
 
 # ---------------------------------------------------------------------------
