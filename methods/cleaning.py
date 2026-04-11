@@ -24,8 +24,6 @@ import numpy as np
 from cleanlab.filter import find_label_issues
 from datascope.importance import SklearnModelAccuracy
 from datascope.importance.shapley import ImportanceMethod, ShapleyImportance
-from scipy.optimize import brentq
-from scipy.stats import beta as beta_dist
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 from sklearn.metrics.pairwise import rbf_kernel
@@ -99,6 +97,165 @@ def clean_datascope(
         accs.append(accuracy_score(y_test, pipeline.predict(X_test)))
 
     return accs, ranked_noisy
+
+
+def clean_datascope_iterative(
+    pipeline_factory: Callable,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    noisy_positions: np.ndarray,
+    action_fn: Callable,
+    proportions: np.ndarray,
+    importance_method: ImportanceMethod = ImportanceMethod.NEIGHBOR,
+    mc_iterations: int = 50,
+    rerank_every: float = 0.05,
+) -> Tuple[List[float], np.ndarray]:
+    """
+    Iterative DataScope with LOO reranking.
+
+    Uses full Shapley for the initial ranking, then after every `rerank_every`
+    fraction of noisy samples have been cleaned, refits the model on the current
+    cleaned data and re-scores remaining noisy candidates via Leave-One-Out (LOO):
+
+        LOO_importance[i] = acc(X without i, y without i) - acc(X with i, y with i)
+
+    LOO is O(n_remaining × fit_time) per reranking step — cheap for linear models
+    and much faster than a full Shapley recomputation.  The initial Shapley ranking
+    anchors the ordering; LOO refines it as noise is progressively removed.
+
+    Parameters
+    ----------
+    rerank_every : fraction of noisy samples between reranking steps (default 0.05)
+    """
+    # --- Initial Shapley ranking ---
+    pipeline = pipeline_factory()
+    pipeline.fit(X_train, y_train)
+    importances  = _compute_importances(
+        pipeline, X_train, y_train, X_test, y_test, importance_method, mc_iterations
+    )
+    sorted_order = np.argsort(-importances[noisy_positions])
+    ranked_noisy = noisy_positions[sorted_order].tolist()   # mutable list
+
+    rerank_interval = max(1, int(rerank_every * len(noisy_positions)))
+    since_last_rerank = 0
+
+    # Working copies of training data that we update as samples are cleaned
+    X_cur, y_cur = X_train.copy(), y_train.copy()
+
+    accs = []
+    cleaned_so_far: list = []
+
+    for p in proportions:
+        target = int(p * len(ranked_noisy) + len(cleaned_so_far))
+        # Clean up to `target` total samples
+        while len(cleaned_so_far) < target and len(ranked_noisy) > 0:
+            next_idx = ranked_noisy.pop(0)
+            cleaned_so_far.append(next_idx)
+            since_last_rerank += 1
+
+            # Apply action to the working copy
+            X_cur, y_cur = action_fn(X_cur, y_cur, np.array([next_idx]))
+
+            # Rerank remaining candidates every `rerank_interval` cleans
+            if since_last_rerank >= rerank_interval and len(ranked_noisy) > 0:
+                pipeline.fit(X_cur, y_cur)
+                current_acc = accuracy_score(y_test, pipeline.predict(X_test))
+
+                loo_scores = []
+                for cand in ranked_noisy:
+                    mask = np.ones(len(X_cur), dtype=bool)
+                    mask[cand] = False
+                    p_loo = pipeline_factory()
+                    p_loo.fit(X_cur[mask], y_cur[mask])
+                    loo_scores.append(
+                        accuracy_score(y_test, p_loo.predict(X_test)) - current_acc
+                    )
+                ranked_noisy = [
+                    ranked_noisy[i]
+                    for i in np.argsort(-np.array(loo_scores))
+                ]
+                since_last_rerank = 0
+
+        pipeline.fit(X_cur, y_cur)
+        accs.append(accuracy_score(y_test, pipeline.predict(X_test)))
+
+    # Return initial + cleaned order as the final ranking for traceability
+    final_ranked = np.array(cleaned_so_far + ranked_noisy, dtype=int)
+    return accs, final_ranked
+
+
+def clean_datascope_hybrid(
+    pipeline_factory: Callable,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    noisy_positions: np.ndarray,
+    action_fn: Callable,
+    proportions: np.ndarray,
+    importance_method: ImportanceMethod = ImportanceMethod.NEIGHBOR,
+    mc_iterations: int = 50,
+    alpha: float = 0.5,
+    n_jobs: int = 1,
+) -> Tuple[List[float], np.ndarray]:
+    """
+    Hybrid DataScope + CleanLab ranking.
+
+    Combines two complementary signals over the known noisy positions:
+      - DataScope Shapley importance: how much each sample hurts accuracy
+      - CleanLab (1 - self_confidence): how likely each label is wrong
+
+    Both scores are min-max normalised to [0, 1] then blended:
+        hybrid_score = alpha * shapley + (1 - alpha) * (1 - self_conf)
+
+    Higher combined score → clean first.
+
+    Parameters
+    ----------
+    alpha   : weight for the Shapley signal (default 0.5 = equal blend)
+    n_jobs  : parallelism for CleanLab cross_val_predict
+    """
+    pipeline = pipeline_factory()
+    pipeline.fit(X_train, y_train)
+
+    # --- Shapley importances (over noisy positions only) ---
+    importances = _compute_importances(
+        pipeline, X_train, y_train, X_test, y_test, importance_method, mc_iterations
+    )
+    shap_noisy = importances[noisy_positions].astype(float)
+
+    # --- CleanLab self_confidence (over ALL training samples) ---
+    pred_probs = cross_val_predict(
+        pipeline_factory(), X_train, y_train,
+        cv=5, method="predict_proba", n_jobs=n_jobs,
+    )
+    self_conf_all = pred_probs[np.arange(len(y_train)), y_train]
+    conf_noisy = self_conf_all[noisy_positions].astype(float)
+
+    # --- Normalise both signals to [0, 1] ---
+    def _minmax(arr):
+        lo, hi = arr.min(), arr.max()
+        return (arr - lo) / (hi - lo + 1e-12)
+
+    shap_norm = _minmax(shap_noisy)
+    conf_norm = _minmax(1.0 - conf_noisy)   # high = label likely wrong
+
+    hybrid = alpha * shap_norm + (1.0 - alpha) * conf_norm
+    sorted_order = np.argsort(-hybrid)       # descending: most harmful first
+    ranked_noisy = noisy_positions[sorted_order]
+
+    accs = []
+    for p in proportions:
+        n_clean = int(p * len(ranked_noisy))
+        X_c, y_c = action_fn(X_train, y_train, ranked_noisy[:n_clean])
+        pipeline.fit(X_c, y_c)
+        accs.append(accuracy_score(y_test, pipeline.predict(X_test)))
+
+    return accs, ranked_noisy
+
+
 # ---------------------------------------------------------------------------
 # CleanLab
 # ---------------------------------------------------------------------------
@@ -158,87 +315,111 @@ def clean_cleanlab(
 
 
 # ---------------------------------------------------------------------------
-# Beta Mixture Model threshold helper
+# Otsu threshold helper
+# ---------------------------------------------------------------------------
+# KDE valley detection threshold helper
 # ---------------------------------------------------------------------------
 
-def _bmm_threshold(scores: np.ndarray, n_iter: int = 100, tol: float = 1e-6) -> float:
+def _kde_valley_threshold(scores: np.ndarray, n_bins: int = 512) -> float:
     """
-    Fit a 2-component Beta Mixture Model to `scores` via EM and return the
-    crossing point of the two component PDFs as the correction threshold.
+    Find the adaptive correction/removal threshold via KDE valley detection.
 
-    The low-mean component captures noisy/unrecoverable samples (→ remove).
-    The high-mean component captures moderately suspicious ones (→ correct).
-    Brent's method finds the root of pdf_low(x) - pdf_high(x) on the interval
-    between the two component means.
+    Smooths a histogram of `scores` using Scott's bandwidth rule, finds the
+    two most prominent peaks via `find_peaks`, then returns the position of
+    the minimum density between them as the threshold:
 
-    Falls back to the median if the mixture degenerates or the root search fails.
+      below threshold → highly suspicious (remove)
+      above threshold → moderately suspicious (correct via action_fn)
+
+    Falls back to the median when fewer than two prominent peaks are found —
+    indicating a unimodal distribution (e.g. random label noise) where any
+    split would be arbitrary.
+
+    Parameters
+    ----------
+    scores : self_confidence scores for CleanLab-flagged samples, in [0, 1]
+    n_bins : histogram resolution before smoothing (default 512)
     """
+    from scipy.ndimage import gaussian_filter1d
+    from scipy.signal import find_peaks
+
     scores = np.clip(scores, 1e-6, 1 - 1e-6)
-    n = len(scores)
 
-    # --- initialise two components by splitting at the median ---
-    med = float(np.median(scores))
-    params = []
-    for subset in [scores[scores <= med], scores[scores > med]]:
-        if len(subset) < 2:
-            subset = scores
-        mu  = float(np.clip(np.mean(subset), 0.01, 0.99))
-        var = float(np.clip(np.var(subset),  1e-6, mu * (1 - mu) - 1e-6))
-        fac = mu * (1 - mu) / var - 1
-        params.append([max(fac * mu, 0.1), max(fac * (1 - mu), 0.1)])
+    # Scott's bandwidth rule: h = 1.06 * std * n^(-1/5), converted to bin units
+    sigma_bins = max(1.0, 1.06 * float(np.std(scores)) * len(scores) ** (-0.2) * n_bins)
 
-    alphas  = np.array([p[0] for p in params])
-    betas_  = np.array([p[1] for p in params])
-    weights = np.array([0.5, 0.5])
+    counts, bin_edges = np.histogram(scores, bins=n_bins, range=(0.0, 1.0))
+    bin_centres = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+    density = gaussian_filter1d(counts.astype(float), sigma=sigma_bins)
 
-    prev_ll = -np.inf
-    for _ in range(n_iter):
-        # E-step
-        resp = np.column_stack([
-            weights[k] * beta_dist.pdf(scores, alphas[k], betas_[k])
-            for k in range(2)
-        ])
-        row_sum = resp.sum(axis=1, keepdims=True)
-        row_sum = np.where(row_sum < 1e-300, 1e-300, row_sum)
-        resp /= row_sum
+    # Find peaks with minimum prominence = 10% of the density range,
+    # and minimum distance of n_bins // 8 bins apart to avoid nearby spurious peaks
+    prominence = 0.10 * (density.max() - density.min())
+    peaks, props = find_peaks(density, prominence=prominence, distance=n_bins // 8)
 
-        # M-step
-        Nk = resp.sum(axis=0)
-        weights = Nk / n
-        for k in range(2):
-            mu_k  = float(np.clip((resp[:, k] * scores).sum() / Nk[k], 0.01, 0.99))
-            var_k = float(np.clip((resp[:, k] * (scores - mu_k) ** 2).sum() / Nk[k],
-                                  1e-6, mu_k * (1 - mu_k) - 1e-6))
-            fac = mu_k * (1 - mu_k) / var_k - 1
-            alphas[k]  = max(fac * mu_k,        0.1)
-            betas_[k]  = max(fac * (1 - mu_k),  0.1)
-
-        ll = float(np.log(row_sum).sum())
-        if abs(ll - prev_ll) < tol:
-            break
-        prev_ll = ll
-
-    # component means
-    means = alphas / (alphas + betas_)
-    lo, hi = int(np.argmin(means)), int(np.argmax(means))
-
-    if means[lo] >= means[hi]:          # degenerate — fall back
+    if len(peaks) < 2:
         return float(np.median(scores))
 
-    def _diff(x: float) -> float:
-        return (weights[lo] * float(beta_dist.pdf(x, alphas[lo], betas_[lo])) -
-                weights[hi] * float(beta_dist.pdf(x, alphas[hi], betas_[hi])))
+    # Take the two most prominent peaks
+    top2 = peaks[np.argsort(props["prominences"])[-2:]]
+    lo, hi = int(top2.min()), int(top2.max())
 
-    # bracket must straddle zero; if it doesn't, the distributions overlap heavily
-    lo_bound = float(means[lo]) + 0.01
-    hi_bound = float(means[hi]) - 0.01
-    if lo_bound >= hi_bound or _diff(lo_bound) * _diff(hi_bound) > 0:
+    # Valley = position of minimum density between the two peaks
+    valley = lo + int(np.argmin(density[lo:hi + 1]))
+    return float(bin_centres[valley])
+
+
+def _otsu_threshold(scores: np.ndarray, n_bins: int = 256) -> float:
+    """
+    Find the adaptive correction/removal threshold via Otsu's method.
+
+    Otsu sweeps every candidate threshold and picks the one that maximises
+    between-class variance of the two resulting groups (below = remove,
+    above = correct).  Non-parametric — makes no distributional assumptions.
+
+    Before applying the Otsu split the bimodality coefficient (BC) is checked:
+        BC = (skewness² + 1) / Pearson-kurtosis
+    BC > 5/9 ≈ 0.556 indicates a bimodal or heavy-tailed distribution where
+    Otsu is meaningful.  Falls back to the median when BC ≤ 5/9, which catches
+    unimodal distributions (e.g. random label noise) where any split would
+    be arbitrary.
+    """
+    from scipy.stats import skew, kurtosis as sp_kurtosis
+
+    scores = np.clip(scores, 1e-6, 1 - 1e-6)
+
+    # Bimodality check — skip Otsu if distribution appears unimodal
+    g1 = float(skew(scores))
+    g2 = float(sp_kurtosis(scores, fisher=False))   # Pearson kurtosis (normal=3)
+    bc = (g1 ** 2 + 1) / g2 if g2 > 0 else 0.0
+    if bc <= 5 / 9:
         return float(np.median(scores))
 
-    try:
-        return float(brentq(_diff, lo_bound, hi_bound))
-    except ValueError:
+    counts, bin_edges = np.histogram(scores, bins=n_bins, range=(0.0, 1.0))
+    bin_centres = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+    total = counts.sum()
+    if total == 0:
         return float(np.median(scores))
+
+    prefix_w  = np.cumsum(counts)
+    prefix_wm = np.cumsum(counts * bin_centres)
+
+    best_var = -1.0
+    best_t   = float(np.median(scores))
+
+    for i in range(1, n_bins):
+        w0 = prefix_w[i - 1]
+        w1 = total - w0
+        if w0 == 0 or w1 == 0:
+            continue
+        mu0 = prefix_wm[i - 1] / w0
+        mu1 = (prefix_wm[-1] - prefix_wm[i - 1]) / w1
+        var_between = (w0 / total) * (w1 / total) * (mu0 - mu1) ** 2
+        if var_between > best_var:
+            best_var = var_between
+            best_t   = float(bin_centres[i])
+
+    return best_t
 
 
 # ---------------------------------------------------------------------------
@@ -292,16 +473,14 @@ def clean_cleanlab_adaptive(
     # self_confidence[i] = P(current label is correct | x_i)
     self_conf = pred_probs[np.arange(len(y_train)), y_train]
 
-    # Fit a 2-component Beta Mixture Model to the self_confidence scores of all
-    # CleanLab-flagged samples and use the crossing point of the two component
-    # PDFs as the split threshold.
+    # KDE valley detection: smooth the self_confidence density of all flagged
+    # samples and split at the deepest valley between two peaks.
     #
-    # Low-mean component  → highly suspicious samples  → remove
-    # High-mean component → moderately suspicious ones → correct via action_fn
+    # Below threshold → highly suspicious (remove)
+    # Above threshold → moderately suspicious (correct via action_fn)
     #
-    # Falls back to the median when the two components overlap heavily or the
-    # mixture degenerates (e.g., very few flagged samples).
-    adaptive_threshold = _bmm_threshold(self_conf[cl_ranked])
+    # Falls back to the median when no valley exists (unimodal distribution).
+    adaptive_threshold = _kde_valley_threshold(self_conf[cl_ranked])
 
     accs = []
     for p in proportions:
