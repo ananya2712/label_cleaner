@@ -104,7 +104,7 @@ def clean_datascope(
     pipeline.fit(X_train, y_train)
 
     importances  = _compute_importances(pipeline, X_train, y_train, X_test, y_test, importance_method, mc_iterations)
-    sorted_order = np.argsort(-importances[noisy_positions])
+    sorted_order = np.argsort(importances[noisy_positions])  # ascending: lowest (most harmful) Shapley importance first
     ranked_noisy = noisy_positions[sorted_order]
 
     accs = []
