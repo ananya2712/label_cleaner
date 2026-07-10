@@ -15,14 +15,11 @@ from sklearn.metrics import accuracy_score
 
 from ..methods.cleaning import (
     action_cap,
-    action_flip_labels,
     action_remove,
     action_restore_labels,
     clean_cleanlab,
-    clean_cleanlab_adaptive,
     clean_datascope,
-    clean_datascope_hybrid,
-    clean_datascope_iterative,
+    clean_hybrid_auto,
     clean_kairos,
     clean_random,
 )
@@ -68,26 +65,17 @@ def _run_methods(pipeline_factory: Callable, X_train_noisy, y_train_noisy, X_tes
         pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
         action_fn, proportions, n_jobs=n_cleanlab_jobs
     )
-    accs_cl_ada, _ = clean_cleanlab_adaptive(
-        pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
-        action_fn, proportions, n_jobs=n_cleanlab_jobs,
-    )
     accs_kr, kr_ranked = clean_kairos(
         pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
         action_fn, proportions,
     )
-    accs_ds_hyb, _ = clean_datascope_hybrid(
+    accs_auto, _, detected_noise = clean_hybrid_auto(
         pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
         noisy_positions, action_fn, proportions,
         importance_method=importance_method, mc_iterations=mc_iterations,
         n_jobs=n_cleanlab_jobs,
     )
-    accs_ds_iter, _ = clean_datascope_iterative(
-        pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
-        noisy_positions, action_fn, proportions,
-        importance_method=importance_method, mc_iterations=mc_iterations,
-    )
-    return accs_ds, rnd_mean, rnd_std, accs_cl, accs_cl_ada, accs_kr, accs_ds_hyb, accs_ds_iter, ds_ranked, cl_ranked, kr_ranked
+    return accs_ds, rnd_mean, rnd_std, accs_cl, accs_kr, accs_auto, detected_noise, ds_ranked, cl_ranked, kr_ranked
 
 
 def build_noise_bundle_outlier(split, outlier_col_idx: int, noise_level: float,
@@ -131,7 +119,7 @@ def run_outlier_experiment_with_artifacts(
         pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test
     )
     cap_fn = action_cap(ds.outlier_col_idx, bundle.metadata["cap_value"])
-    accs_ds, rnd_mean, rnd_std, accs_cl, accs_cl_ada, accs_kr, accs_ds_hyb, accs_ds_iter, ds_ranked, cl_ranked, kr_ranked = _run_methods(
+    accs_ds, rnd_mean, rnd_std, accs_cl, accs_kr, accs_auto, detected_noise, ds_ranked, cl_ranked, kr_ranked = _run_methods(
         pipeline_factory,
         bundle.X_noisy, bundle.y_noisy,
         split.X_test, split.y_test,
@@ -158,9 +146,7 @@ def run_outlier_experiment_with_artifacts(
         proportions=proportions,
         datascope_removal=accs_rm,
         kairos=accs_kr,
-        cleanlab_adaptive=accs_cl_ada,
-        datascope_hybrid=accs_ds_hyb,
-        datascope_iterative=accs_ds_iter,
+        hybrid_auto=accs_auto,
     )
     return ExperimentArtifacts(
         curves=curves,
@@ -201,7 +187,7 @@ def run_random_label_experiment_with_artifacts(
         pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test
     )
     restore_fn = action_restore_labels(split.y_train)
-    accs_ds, rnd_mean, rnd_std, accs_cl, accs_cl_ada, accs_kr, accs_ds_hyb, accs_ds_iter, ds_ranked, cl_ranked, kr_ranked = _run_methods(
+    accs_ds, rnd_mean, rnd_std, accs_cl, accs_kr, accs_auto, detected_noise, ds_ranked, cl_ranked, kr_ranked = _run_methods(
         pipeline_factory,
         bundle.X_noisy, bundle.y_noisy,
         split.X_test, split.y_test,
@@ -211,8 +197,7 @@ def run_random_label_experiment_with_artifacts(
     curves = MethodCurves(
         datascope=accs_ds, random_mean=rnd_mean, random_std=rnd_std,
         cleanlab=accs_cl, baseline=baseline, proportions=proportions,
-        kairos=accs_kr, cleanlab_adaptive=accs_cl_ada,
-        datascope_hybrid=accs_ds_hyb, datascope_iterative=accs_ds_iter,
+        kairos=accs_kr, hybrid_auto=accs_auto,
     )
     return ExperimentArtifacts(
         curves=curves,
@@ -258,7 +243,7 @@ def run_nnar_experiment_with_artifacts(
         pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test
     )
     restore_fn = action_restore_labels(split.y_train)
-    accs_ds, rnd_mean, rnd_std, accs_cl, accs_cl_ada, accs_kr, accs_ds_hyb, accs_ds_iter, ds_ranked, cl_ranked, kr_ranked = _run_methods(
+    accs_ds, rnd_mean, rnd_std, accs_cl, accs_kr, accs_auto, detected_noise, ds_ranked, cl_ranked, kr_ranked = _run_methods(
         pipeline_factory,
         bundle.X_noisy, bundle.y_noisy,
         split.X_test, split.y_test,
@@ -268,8 +253,7 @@ def run_nnar_experiment_with_artifacts(
     curves = MethodCurves(
         datascope=accs_ds, random_mean=rnd_mean, random_std=rnd_std,
         cleanlab=accs_cl, baseline=baseline, proportions=proportions,
-        kairos=accs_kr, cleanlab_adaptive=accs_cl_ada,
-        datascope_hybrid=accs_ds_hyb, datascope_iterative=accs_ds_iter,
+        kairos=accs_kr, hybrid_auto=accs_auto,
     )
     return ExperimentArtifacts(
         curves=curves,
@@ -314,20 +298,19 @@ def run_mnar_experiment_with_artifacts(
     baseline = _baseline_acc(
         pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test
     )
-    # Feature corruption is not directly restorable; label flip is the comparison action.
-    flip_fn = action_flip_labels()
-    accs_ds, rnd_mean, rnd_std, accs_cl, accs_cl_ada, accs_kr, accs_ds_hyb, accs_ds_iter, ds_ranked, cl_ranked, kr_ranked = _run_methods(
+    # For MNAR feature corruption, remove the detected rows rather than altering labels.
+    remove_fn = action_remove()
+    accs_ds, rnd_mean, rnd_std, accs_cl, accs_kr, accs_auto, detected_noise, ds_ranked, cl_ranked, kr_ranked = _run_methods(
         pipeline_factory,
         bundle.X_noisy, bundle.y_noisy,
         split.X_test, split.y_test,
-        bundle.noisy_positions, flip_fn, proportions,
+        bundle.noisy_positions, remove_fn, proportions,
         importance_method=importance_method, mc_iterations=mc_iterations,
     )
     curves = MethodCurves(
         datascope=accs_ds, random_mean=rnd_mean, random_std=rnd_std,
         cleanlab=accs_cl, baseline=baseline, proportions=proportions,
-        kairos=accs_kr, cleanlab_adaptive=accs_cl_ada,
-        datascope_hybrid=accs_ds_hyb, datascope_iterative=accs_ds_iter,
+        kairos=accs_kr, hybrid_auto=accs_auto,
     )
     return ExperimentArtifacts(
         curves=curves,

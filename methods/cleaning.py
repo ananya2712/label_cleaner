@@ -9,7 +9,7 @@ by noise type:
   - outlier   : cap feature value at 2-sigma
   - rnd_label : restore ground-truth label
   - nnar      : restore ground-truth label
-  - mnar      : flip label (feature corruption can't be undone)
+  - mnar      : remove detected rows
 
 Cleaners
 --------
@@ -49,6 +49,24 @@ def _compute_importances(
         mc_iterations=mc_iterations,
     )
     return imp.fit(X_train, y_train).score(X_test, y_test)
+
+
+def _safe_accuracy(
+    pipeline_factory: Callable,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+) -> float:
+    """Return NaN when aggressive filtering leaves no trainable dataset."""
+    if len(X_train) == 0 or len(np.unique(y_train)) < 2:
+        return float("nan")
+    pipeline = pipeline_factory()
+    try:
+        pipeline.fit(X_train, y_train)
+        return accuracy_score(y_test, pipeline.predict(X_test))
+    except ValueError:
+        return float("nan")
 
 
 def clean_datascope(
@@ -91,169 +109,17 @@ def clean_datascope(
 
     accs = []
     for p in proportions:
-        n_clean       = int(p * len(ranked_noisy))
-        X_c, y_c     = action_fn(X_train, y_train, ranked_noisy[:n_clean])
-        pipeline.fit(X_c, y_c)
-        accs.append(accuracy_score(y_test, pipeline.predict(X_test)))
+        n_clean   = int(p * len(ranked_noisy))
+        X_c, y_c  = action_fn(X_train, y_train, ranked_noisy[:n_clean])
+        accs.append(_safe_accuracy(pipeline_factory, X_c, y_c, X_test, y_test))
 
     return accs, ranked_noisy
 
 
-def clean_datascope_iterative(
-    pipeline_factory: Callable,
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    X_test: np.ndarray,
-    y_test: np.ndarray,
-    noisy_positions: np.ndarray,
-    action_fn: Callable,
-    proportions: np.ndarray,
-    importance_method: ImportanceMethod = ImportanceMethod.NEIGHBOR,
-    mc_iterations: int = 50,
-    rerank_every: float = 0.05,
-) -> Tuple[List[float], np.ndarray]:
-    """
-    Iterative DataScope with LOO reranking.
 
-    Uses full Shapley for the initial ranking, then after every `rerank_every`
-    fraction of noisy samples have been cleaned, refits the model on the current
-    cleaned data and re-scores remaining noisy candidates via Leave-One-Out (LOO):
-
-        LOO_importance[i] = acc(X without i, y without i) - acc(X with i, y with i)
-
-    LOO is O(n_remaining × fit_time) per reranking step — cheap for linear models
-    and much faster than a full Shapley recomputation.  The initial Shapley ranking
-    anchors the ordering; LOO refines it as noise is progressively removed.
-
-    Parameters
-    ----------
-    rerank_every : fraction of noisy samples between reranking steps (default 0.05)
-    """
-    # --- Initial Shapley ranking ---
-    pipeline = pipeline_factory()
-    pipeline.fit(X_train, y_train)
-    importances  = _compute_importances(
-        pipeline, X_train, y_train, X_test, y_test, importance_method, mc_iterations
-    )
-    sorted_order = np.argsort(-importances[noisy_positions])
-    ranked_noisy = noisy_positions[sorted_order].tolist()   # mutable list
-
-    rerank_interval = max(1, int(rerank_every * len(noisy_positions)))
-    since_last_rerank = 0
-
-    # Working copies of training data that we update as samples are cleaned
-    X_cur, y_cur = X_train.copy(), y_train.copy()
-
-    accs = []
-    cleaned_so_far: list = []
-
-    for p in proportions:
-        target = int(p * len(ranked_noisy) + len(cleaned_so_far))
-        # Clean up to `target` total samples
-        while len(cleaned_so_far) < target and len(ranked_noisy) > 0:
-            next_idx = ranked_noisy.pop(0)
-            cleaned_so_far.append(next_idx)
-            since_last_rerank += 1
-
-            # Apply action to the working copy
-            X_cur, y_cur = action_fn(X_cur, y_cur, np.array([next_idx]))
-
-            # Rerank remaining candidates every `rerank_interval` cleans
-            if since_last_rerank >= rerank_interval and len(ranked_noisy) > 0:
-                pipeline.fit(X_cur, y_cur)
-                current_acc = accuracy_score(y_test, pipeline.predict(X_test))
-
-                loo_scores = []
-                for cand in ranked_noisy:
-                    mask = np.ones(len(X_cur), dtype=bool)
-                    mask[cand] = False
-                    p_loo = pipeline_factory()
-                    p_loo.fit(X_cur[mask], y_cur[mask])
-                    loo_scores.append(
-                        accuracy_score(y_test, p_loo.predict(X_test)) - current_acc
-                    )
-                ranked_noisy = [
-                    ranked_noisy[i]
-                    for i in np.argsort(-np.array(loo_scores))
-                ]
-                since_last_rerank = 0
-
-        pipeline.fit(X_cur, y_cur)
-        accs.append(accuracy_score(y_test, pipeline.predict(X_test)))
-
-    # Return initial + cleaned order as the final ranking for traceability
-    final_ranked = np.array(cleaned_so_far + ranked_noisy, dtype=int)
-    return accs, final_ranked
-
-
-def clean_datascope_hybrid(
-    pipeline_factory: Callable,
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    X_test: np.ndarray,
-    y_test: np.ndarray,
-    noisy_positions: np.ndarray,
-    action_fn: Callable,
-    proportions: np.ndarray,
-    importance_method: ImportanceMethod = ImportanceMethod.NEIGHBOR,
-    mc_iterations: int = 50,
-    alpha: float = 0.5,
-    n_jobs: int = 1,
-) -> Tuple[List[float], np.ndarray]:
-    """
-    Hybrid DataScope + CleanLab ranking.
-
-    Combines two complementary signals over the known noisy positions:
-      - DataScope Shapley importance: how much each sample hurts accuracy
-      - CleanLab (1 - self_confidence): how likely each label is wrong
-
-    Both scores are min-max normalised to [0, 1] then blended:
-        hybrid_score = alpha * shapley + (1 - alpha) * (1 - self_conf)
-
-    Higher combined score → clean first.
-
-    Parameters
-    ----------
-    alpha   : weight for the Shapley signal (default 0.5 = equal blend)
-    n_jobs  : parallelism for CleanLab cross_val_predict
-    """
-    pipeline = pipeline_factory()
-    pipeline.fit(X_train, y_train)
-
-    # --- Shapley importances (over noisy positions only) ---
-    importances = _compute_importances(
-        pipeline, X_train, y_train, X_test, y_test, importance_method, mc_iterations
-    )
-    shap_noisy = importances[noisy_positions].astype(float)
-
-    # --- CleanLab self_confidence (over ALL training samples) ---
-    pred_probs = cross_val_predict(
-        pipeline_factory(), X_train, y_train,
-        cv=5, method="predict_proba", n_jobs=n_jobs,
-    )
-    self_conf_all = pred_probs[np.arange(len(y_train)), y_train]
-    conf_noisy = self_conf_all[noisy_positions].astype(float)
-
-    # --- Normalise both signals to [0, 1] ---
-    def _minmax(arr):
-        lo, hi = arr.min(), arr.max()
-        return (arr - lo) / (hi - lo + 1e-12)
-
-    shap_norm = _minmax(shap_noisy)
-    conf_norm = _minmax(1.0 - conf_noisy)   # high = label likely wrong
-
-    hybrid = alpha * shap_norm + (1.0 - alpha) * conf_norm
-    sorted_order = np.argsort(-hybrid)       # descending: most harmful first
-    ranked_noisy = noisy_positions[sorted_order]
-
-    accs = []
-    for p in proportions:
-        n_clean = int(p * len(ranked_noisy))
-        X_c, y_c = action_fn(X_train, y_train, ranked_noisy[:n_clean])
-        pipeline.fit(X_c, y_c)
-        accs.append(accuracy_score(y_test, pipeline.predict(X_test)))
-
-    return accs, ranked_noisy
+# ---------------------------------------------------------------------------
+# clean_datascope_hybrid — DISABLED (blending DataScope + CleanLab signals)
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -307,200 +173,16 @@ def clean_cleanlab(
     accs = []
     for p in proportions:
         n_clean   = int(p * len(cl_ranked))
-        X_c, y_c = action_fn(X_train, y_train, cl_ranked[:n_clean])
-        pipeline.fit(X_c, y_c)
-        accs.append(accuracy_score(y_test, pipeline.predict(X_test)))
+        X_c, y_c  = action_fn(X_train, y_train, cl_ranked[:n_clean])
+        accs.append(_safe_accuracy(pipeline_factory, X_c, y_c, X_test, y_test))
 
     return accs, cl_ranked
 
 
 # ---------------------------------------------------------------------------
-# Otsu threshold helper
+# clean_cleanlab_adaptive — DISABLED (KDE-valley adaptive correction/removal)
+# _kde_valley_threshold and _otsu_threshold also disabled
 # ---------------------------------------------------------------------------
-# KDE valley detection threshold helper
-# ---------------------------------------------------------------------------
-
-def _kde_valley_threshold(scores: np.ndarray, n_bins: int = 512) -> float:
-    """
-    Find the adaptive correction/removal threshold via KDE valley detection.
-
-    Smooths a histogram of `scores` using Scott's bandwidth rule, finds the
-    two most prominent peaks via `find_peaks`, then returns the position of
-    the minimum density between them as the threshold:
-
-      below threshold → highly suspicious (remove)
-      above threshold → moderately suspicious (correct via action_fn)
-
-    Falls back to the median when fewer than two prominent peaks are found —
-    indicating a unimodal distribution (e.g. random label noise) where any
-    split would be arbitrary.
-
-    Parameters
-    ----------
-    scores : self_confidence scores for CleanLab-flagged samples, in [0, 1]
-    n_bins : histogram resolution before smoothing (default 512)
-    """
-    from scipy.ndimage import gaussian_filter1d
-    from scipy.signal import find_peaks
-
-    scores = np.clip(scores, 1e-6, 1 - 1e-6)
-
-    # Scott's bandwidth rule: h = 1.06 * std * n^(-1/5), converted to bin units
-    sigma_bins = max(1.0, 1.06 * float(np.std(scores)) * len(scores) ** (-0.2) * n_bins)
-
-    counts, bin_edges = np.histogram(scores, bins=n_bins, range=(0.0, 1.0))
-    bin_centres = (bin_edges[:-1] + bin_edges[1:]) / 2.0
-    density = gaussian_filter1d(counts.astype(float), sigma=sigma_bins)
-
-    # Find peaks with minimum prominence = 10% of the density range,
-    # and minimum distance of n_bins // 8 bins apart to avoid nearby spurious peaks
-    prominence = 0.10 * (density.max() - density.min())
-    peaks, props = find_peaks(density, prominence=prominence, distance=n_bins // 8)
-
-    if len(peaks) < 2:
-        return float(np.median(scores))
-
-    # Take the two most prominent peaks
-    top2 = peaks[np.argsort(props["prominences"])[-2:]]
-    lo, hi = int(top2.min()), int(top2.max())
-
-    # Valley = position of minimum density between the two peaks
-    valley = lo + int(np.argmin(density[lo:hi + 1]))
-    return float(bin_centres[valley])
-
-
-def _otsu_threshold(scores: np.ndarray, n_bins: int = 256) -> float:
-    """
-    Find the adaptive correction/removal threshold via Otsu's method.
-
-    Otsu sweeps every candidate threshold and picks the one that maximises
-    between-class variance of the two resulting groups (below = remove,
-    above = correct).  Non-parametric — makes no distributional assumptions.
-
-    Before applying the Otsu split the bimodality coefficient (BC) is checked:
-        BC = (skewness² + 1) / Pearson-kurtosis
-    BC > 5/9 ≈ 0.556 indicates a bimodal or heavy-tailed distribution where
-    Otsu is meaningful.  Falls back to the median when BC ≤ 5/9, which catches
-    unimodal distributions (e.g. random label noise) where any split would
-    be arbitrary.
-    """
-    from scipy.stats import skew, kurtosis as sp_kurtosis
-
-    scores = np.clip(scores, 1e-6, 1 - 1e-6)
-
-    # Bimodality check — skip Otsu if distribution appears unimodal
-    g1 = float(skew(scores))
-    g2 = float(sp_kurtosis(scores, fisher=False))   # Pearson kurtosis (normal=3)
-    bc = (g1 ** 2 + 1) / g2 if g2 > 0 else 0.0
-    if bc <= 5 / 9:
-        return float(np.median(scores))
-
-    counts, bin_edges = np.histogram(scores, bins=n_bins, range=(0.0, 1.0))
-    bin_centres = (bin_edges[:-1] + bin_edges[1:]) / 2.0
-    total = counts.sum()
-    if total == 0:
-        return float(np.median(scores))
-
-    prefix_w  = np.cumsum(counts)
-    prefix_wm = np.cumsum(counts * bin_centres)
-
-    best_var = -1.0
-    best_t   = float(np.median(scores))
-
-    for i in range(1, n_bins):
-        w0 = prefix_w[i - 1]
-        w1 = total - w0
-        if w0 == 0 or w1 == 0:
-            continue
-        mu0 = prefix_wm[i - 1] / w0
-        mu1 = (prefix_wm[-1] - prefix_wm[i - 1]) / w1
-        var_between = (w0 / total) * (w1 / total) * (mu0 - mu1) ** 2
-        if var_between > best_var:
-            best_var = var_between
-            best_t   = float(bin_centres[i])
-
-    return best_t
-
-
-# ---------------------------------------------------------------------------
-# Adaptive CleanLab (correction vs. filtering)
-# ---------------------------------------------------------------------------
-
-def clean_cleanlab_adaptive(
-    pipeline_factory: Callable,
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    X_test: np.ndarray,
-    y_test: np.ndarray,
-    action_fn: Callable,
-    proportions: np.ndarray,
-    n_jobs: int = 1,
-) -> Tuple[List[float], np.ndarray]:
-    """
-    Adaptive CleanLab: uses self_confidence scores to decide per-sample action.
-
-    For each flagged sample in the top-k at cleaning proportion p:
-      - self_confidence < correction_threshold  → apply action_fn (correct the label/feature)
-      - self_confidence >= correction_threshold → remove the sample entirely
-
-    Rationale: samples with higher self_confidence (upper half) are moderately
-    suspicious — the model still has some belief in their label, so correction
-    is the safer action. Samples with very low self_confidence (lower half) are
-    highly uncertain and removing them avoids introducing wrong corrections.
-
-    Parameters
-    ----------
-    action_fn            : noise-type-specific correction (cap / restore / flip)
-    correction_threshold : self_confidence cutoff; samples below this get corrected,
-                           samples at or above get removed (default 0.5)
-
-    Returns
-    -------
-    accs      : accuracy at each proportion
-    cl_ranked : training indices ranked most-to-least suspicious (same as clean_cleanlab)
-    """
-    pipeline   = pipeline_factory()
-    pred_probs = cross_val_predict(
-        pipeline, X_train, y_train,
-        cv=5, method="predict_proba", n_jobs=n_jobs,
-    )
-    cl_ranked = find_label_issues(
-        labels=y_train,
-        pred_probs=pred_probs,
-        return_indices_ranked_by="self_confidence",
-        n_jobs=n_jobs,
-    )
-    # self_confidence[i] = P(current label is correct | x_i)
-    self_conf = pred_probs[np.arange(len(y_train)), y_train]
-
-    # KDE valley detection: smooth the self_confidence density of all flagged
-    # samples and split at the deepest valley between two peaks.
-    #
-    # Below threshold → highly suspicious (remove)
-    # Above threshold → moderately suspicious (correct via action_fn)
-    #
-    # Falls back to the median when no valley exists (unimodal distribution).
-    adaptive_threshold = _kde_valley_threshold(self_conf[cl_ranked])
-
-    accs = []
-    for p in proportions:
-        n_clean    = int(p * len(cl_ranked))
-        top_k      = cl_ranked[:n_clean]
-        to_correct = top_k[self_conf[top_k] >= adaptive_threshold]
-        to_remove  = top_k[self_conf[top_k] <  adaptive_threshold]
-
-        # Apply correction first (preserves array size), then filter rows
-        X_c, y_c = action_fn(X_train, y_train, to_correct)
-        if len(to_remove) > 0:
-            keep       = np.ones(len(X_c), dtype=bool)
-            keep[to_remove] = False
-            X_c, y_c  = X_c[keep], y_c[keep]
-
-        pipeline = pipeline_factory()
-        pipeline.fit(X_c, y_c)
-        accs.append(accuracy_score(y_test, pipeline.predict(X_test)))
-
-    return accs, cl_ranked
 
 
 # ---------------------------------------------------------------------------
@@ -549,11 +231,9 @@ def clean_random(
 
         seed_accs = []
         for p in proportions:
-            n_clean   = int(p * len(perm))
-            pipeline  = pipeline_factory()
-            X_c, y_c  = action_fn(X_train, y_train, perm[:n_clean])
-            pipeline.fit(X_c, y_c)
-            seed_accs.append(accuracy_score(y_test, pipeline.predict(X_test)))
+            n_clean  = int(p * len(perm))
+            X_c, y_c = action_fn(X_train, y_train, perm[:n_clean])
+            seed_accs.append(_safe_accuracy(pipeline_factory, X_c, y_c, X_test, y_test))
         all_accs.append(seed_accs)
 
     arr = np.array(all_accs)
@@ -656,9 +336,7 @@ def clean_kairos(
     for p in proportions:
         n_clean  = int(p * len(kairos_ranked))
         X_c, y_c = action_fn(X_train, y_train, kairos_ranked[:n_clean])
-        pipeline = pipeline_factory()
-        pipeline.fit(X_c, y_c)
-        accs.append(accuracy_score(y_test, pipeline.predict(X_test)))
+        accs.append(_safe_accuracy(pipeline_factory, X_c, y_c, X_test, y_test))
 
     return accs, kairos_ranked
 
@@ -724,3 +402,134 @@ def action_flip_labels() -> Callable:
             y_c[positions] = 1 - y_c[positions]
         return X_tr.copy(), y_c
     return _action
+
+
+# ---------------------------------------------------------------------------
+# Auto-routing hybrid cleaner
+# ---------------------------------------------------------------------------
+
+def _detect_noise_type(X_train: np.ndarray, y_train: np.ndarray,
+                        pred_probs: np.ndarray,
+                        feature_anomaly_thresh: float = 0.25,
+                        clustering_thresh: float = 0.30) -> str:
+    """
+    Heuristic two-level noise type detector operating on OOF probabilities.
+
+    Level 1 — Feature vs label noise
+    ---------------------------------
+    Flags the bottom-20% self-confidence samples (most suspicious) and checks
+    what fraction have at least one feature value with |z-score| > 3.  A high
+    fraction suggests the corruption lives in feature space (outlier / MNAR).
+
+    Level 2 — Clustered vs dispersed
+    ----------------------------------
+    Measures how tightly the flagged samples cluster in feature space using the
+    ratio of within-flagged variance to overall variance.  Low within-flagged
+    variance (high clustering) means the suspicious samples share a common
+    region — characteristic of structured noise (NNAR / MNAR).
+
+    Decision tree
+    -------------
+    - High feature anomaly + low clustering  → 'outlier'  → route to Kairos
+    - High feature anomaly + high clustering → 'mnar'     → route to CleanLab
+    - Low  feature anomaly + high clustering → 'nnar'     → route to DataScope
+    - Low  feature anomaly + low clustering  → 'rnd_label'→ route to CleanLab
+
+    Returns one of: 'outlier', 'mnar', 'nnar', 'rnd_label'
+    """
+    self_conf = pred_probs[np.arange(len(y_train)), y_train]
+    threshold = np.percentile(self_conf, 20)
+    flagged   = np.where(self_conf <= threshold)[0]
+
+    if len(flagged) < 2:
+        return "rnd_label"
+
+    # Level 1: feature anomaly
+    mu  = X_train.mean(axis=0)
+    sig = X_train.std(axis=0) + 1e-8
+    z   = np.abs((X_train[flagged] - mu) / sig)
+    feature_anomaly = float((z.max(axis=1) > 3).mean())
+
+    # Level 2: spatial clustering of flagged samples
+    within_var  = float(X_train[flagged].var(axis=0).mean())
+    overall_var = float(X_train.var(axis=0).mean()) + 1e-8
+    clustering  = 1.0 - within_var / overall_var   # high = tightly clustered
+
+    is_feature_noise  = feature_anomaly >= feature_anomaly_thresh
+    is_clustered      = clustering      >= clustering_thresh
+
+    if is_feature_noise and not is_clustered:
+        return "outlier"
+    if is_feature_noise and is_clustered:
+        return "mnar"
+    if not is_feature_noise and is_clustered:
+        return "nnar"
+    return "rnd_label"
+
+
+def clean_hybrid_auto(
+    pipeline_factory: Callable,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    noisy_positions: np.ndarray,
+    action_fn: Callable,
+    proportions: np.ndarray,
+    importance_method: ImportanceMethod = ImportanceMethod.NEIGHBOR,
+    mc_iterations: int = 50,
+    n_jobs: int = 1,
+) -> Tuple[List[float], np.ndarray, str]:
+    """
+    Auto-routing hybrid cleaner.
+
+    Detects the likely noise type from the data using OOF predicted probabilities,
+    then delegates to the empirically best-performing method for that type:
+
+      outlier   → Kairos      (RBF kernel feature score detects feature anomalies)
+      mnar      → CleanLab    (Kairos collapses on MNAR; CL is most stable)
+      nnar      → DataScope   (Shapley captures structured group-based label flips)
+      rnd_label → CleanLab    (self_confidence reliably ranks random label noise)
+
+    Returns
+    -------
+    accs         : accuracy at each cleaning proportion
+    ranked       : training indices ranked most-to-least harmful (method-specific)
+    noise_type   : detected noise type string for diagnostics
+    """
+    pipeline   = pipeline_factory()
+    pred_probs = cross_val_predict(
+        pipeline, X_train, y_train,
+        cv=5, method="predict_proba", n_jobs=n_jobs,
+    )
+
+    # Transform through feature steps for Kairos (needs numeric features)
+    pipeline.fit(X_train, y_train)
+    feature_pipe = pipeline[:-1]
+    X_train_t    = feature_pipe.transform(X_train)
+
+    noise_type = _detect_noise_type(X_train_t, y_train, pred_probs)
+
+    if noise_type == "outlier":
+        accs, ranked = clean_kairos(
+            pipeline_factory, X_train, y_train, X_test, y_test,
+            action_fn, proportions,
+        )
+    elif noise_type == "mnar":
+        accs, ranked = clean_cleanlab(
+            pipeline_factory, X_train, y_train, X_test, y_test,
+            action_fn, proportions, n_jobs=n_jobs,
+        )
+    elif noise_type == "nnar":
+        accs, ranked = clean_datascope(
+            pipeline_factory, X_train, y_train, X_test, y_test,
+            noisy_positions, action_fn, proportions,
+            importance_method=importance_method, mc_iterations=mc_iterations,
+        )
+    else:  # rnd_label
+        accs, ranked = clean_cleanlab(
+            pipeline_factory, X_train, y_train, X_test, y_test,
+            action_fn, proportions, n_jobs=n_jobs,
+        )
+
+    return accs, ranked, noise_type

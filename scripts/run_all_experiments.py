@@ -233,9 +233,7 @@ def _curves_from_cache(cache_dir: Path) -> MethodCurves:
         proportions=np.array(c["proportions"]),
         datascope_removal=c.get("datascope_removal"),
         kairos=c.get("kairos"),
-        cleanlab_adaptive=c.get("cleanlab_adaptive"),
-        datascope_hybrid=c.get("datascope_hybrid"),
-        datascope_iterative=c.get("datascope_iterative"),
+        hybrid_auto=c.get("hybrid_auto"),
     )
 
 
@@ -257,19 +255,12 @@ def _plot_curves(path: Path, dataset: str, noise_type: str, pipeline_key: str, c
     if curves.kairos is not None:
         ax.plot(proportions_pct, curves.kairos,
                 color="#9467bd", linestyle="-", linewidth=1.8, label="Kairos")
-    if curves.cleanlab_adaptive is not None:
-        ax.plot(proportions_pct, curves.cleanlab_adaptive,
-                color="#8c1717", linestyle="-.", linewidth=1.8, label="CleanLab-Adaptive")
     if curves.datascope_removal is not None:
         ax.plot(proportions_pct, curves.datascope_removal,
                 color="#2ca02c", linestyle="-", linewidth=1.4, label="DS removal")
-    if curves.datascope_hybrid is not None:
-        ax.plot(proportions_pct, curves.datascope_hybrid,
-                color="#17becf", linestyle="-", linewidth=1.8, label="DS-Hybrid")
-    if curves.datascope_iterative is not None:
-        ax.plot(proportions_pct, curves.datascope_iterative,
-                color="#e377c2", linestyle="-", linewidth=1.8, label="DS-Iterative")
-
+    if curves.hybrid_auto is not None:
+        ax.plot(proportions_pct, curves.hybrid_auto,
+                color="#000000", linestyle="-", linewidth=2.0, label="Auto-Hybrid")
     ax.set_xlabel("% of training set cleaned", fontsize=10)
     ax.set_ylabel("Accuracy", fontsize=10)
     ax.set_title(
@@ -311,26 +302,17 @@ def _plot_grid(
             ax.axhline(curves.baseline,  color="#ff7f0e", linestyle="--", linewidth=1.0, label="Baseline")
             if curves.kairos is not None:
                 ax.plot(x, curves.kairos, color="#9467bd", linestyle="-", linewidth=1.8, label="Kairos")
-            if curves.cleanlab_adaptive is not None:
-                ax.plot(x, curves.cleanlab_adaptive, color="#8c1717", linestyle="-.", linewidth=1.8, label="CleanLab-Adaptive")
             if curves.datascope_removal is not None:
                 ax.plot(x, curves.datascope_removal, color="#2ca02c", linestyle="-", linewidth=1.4, label="DS removal")
-            if curves.datascope_hybrid is not None:
-                ax.plot(x, curves.datascope_hybrid, color="#17becf", linestyle="-", linewidth=1.8, label="DS-Hybrid")
-            if curves.datascope_iterative is not None:
-                ax.plot(x, curves.datascope_iterative, color="#e377c2", linestyle="-", linewidth=1.8, label="DS-Iterative")
-
+            if curves.hybrid_auto is not None:
+                ax.plot(x, curves.hybrid_auto, color="#000000", linestyle="-", linewidth=2.0, label="Auto-Hybrid")
             all_y = [*curves.datascope, *curves.cleanlab, *rnd_mean, curves.baseline]
             if curves.kairos is not None:
                 all_y.extend(curves.kairos)
-            if curves.cleanlab_adaptive is not None:
-                all_y.extend(curves.cleanlab_adaptive)
             if curves.datascope_removal is not None:
                 all_y.extend(curves.datascope_removal)
-            if curves.datascope_hybrid is not None:
-                all_y.extend(curves.datascope_hybrid)
-            if curves.datascope_iterative is not None:
-                all_y.extend(curves.datascope_iterative)
+            if curves.hybrid_auto is not None:
+                all_y.extend(curves.hybrid_auto)
             y_min, y_max = min(all_y), max(all_y)
             pad = max(0.005, (y_max - y_min) * 0.15)
             ax.set_ylim(max(0.0, y_min - pad), min(1.0, y_max + pad))
@@ -349,14 +331,10 @@ def _plot_grid(
             ]
             if curves.kairos is not None:
                 final_labels.append(f"Kairos: {curves.kairos[-1]:.3f}")
-            if curves.cleanlab_adaptive is not None:
-                final_labels.append(f"CL-Adaptive: {curves.cleanlab_adaptive[-1]:.3f}")
             if curves.datascope_removal is not None:
                 final_labels.append(f"DS removal: {curves.datascope_removal[-1]:.3f}")
-            if curves.datascope_hybrid is not None:
-                final_labels.append(f"DS-Hybrid: {curves.datascope_hybrid[-1]:.3f}")
-            if curves.datascope_iterative is not None:
-                final_labels.append(f"DS-Iterative: {curves.datascope_iterative[-1]:.3f}")
+            if curves.hybrid_auto is not None:
+                final_labels.append(f"Auto-Hybrid: {curves.hybrid_auto[-1]:.3f}")
             n_legend = len(final_labels)
             ax.legend(ax.get_lines()[:n_legend], final_labels,
                       fontsize=5.5, loc="upper left", framealpha=0.8,

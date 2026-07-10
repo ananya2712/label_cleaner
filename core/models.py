@@ -28,9 +28,7 @@ class MethodCurves:
     proportions: np.ndarray
     datascope_removal: Optional[List[float]] = None
     kairos: Optional[List[float]] = None
-    cleanlab_adaptive: Optional[List[float]] = None
-    datascope_hybrid: Optional[List[float]] = None
-    datascope_iterative: Optional[List[float]] = None
+    hybrid_auto: Optional[List[float]] = None
 
 
 @dataclass
