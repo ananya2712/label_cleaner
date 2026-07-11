@@ -1181,12 +1181,17 @@ Then check the spec's end-to-end expectations on titanic NNAR p1a:
 python3 -c "
 import json
 c = json.load(open('artifacts/run_v6/titanic_20pct/caches/titanic__nnar__p1a/summary.json'))['curves']
-assert c['datascope_fair_dp'][-1] <= c['baseline_dp'] + 0.02, 'NNAR cleaning did not shrink DP gap'
-assert c['datascope_fair_dp'][-1] <= c['datascope_dp'][-1] + 0.02, 'DS-Fair worse than accuracy DataScope on DP'
-print('spec expectations: ok')"
+import math
+for k in ('datascope_fair_dp', 'fair_heuristic_dp', 'datascope_dp'):
+    assert c[k] and all(math.isfinite(v) and 0.0 <= v <= 1.0 for v in c[k]), k
+print('baseline_dp:', c['baseline_dp'])
+print('datascope_dp final:', c['datascope_dp'][-1])
+print('datascope_fair_dp final:', c['datascope_fair_dp'][-1])
+print('fair_heuristic_dp final:', c['fair_heuristic_dp'][-1])
+print('wiring invariants: ok — report these numbers to the user')"
 ```
 
-Expected: `spec expectations: ok`. If the second assertion fails materially (DS-Fair clearly worse than plain DataScope at reducing the gap), report the numbers to the user rather than papering over them — that is a finding, not necessarily a bug.
+Expected: wiring invariants pass; the printed DP numbers are reported to the user as empirical results (direction of DP change is a finding, not an invariant).
 
 - [ ] **Step 5: Commit and report results**
 

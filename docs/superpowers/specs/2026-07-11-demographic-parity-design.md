@@ -107,9 +107,13 @@ dp_gap = | P(ŷ = 1 | protected) − P(ŷ = 1 | unprotected) |
 - Unit-style check (committed as a small test script or verify step): DP gap
   function on hand-computed cases; utility class returns finite scores under
   both NEIGHBOR and MONTECARLO on synthetic data with a known planted bias.
-- End-to-end: titanic NNAR p1a — expect (a) cleaning 100% of NNAR noise
-  shrinks the DP gap, (b) `datascope_fair` reduces the gap at least as fast as
-  accuracy-driven DataScope.
+- End-to-end: titanic NNAR p1a — assert wiring invariants only (finite DP
+  curves in [0,1]; DP at 0% cleaning equals baseline DP). Empirical finding
+  during implementation: cleaning NNAR noise on titanic INCREASES the DP gap
+  (noisy ≈ 0.68 → clean ≈ 0.81) because random protected-group label flips
+  pull the group's observed positive rate toward the middle; DP measures
+  outcome-rate parity, not correctness. Direction of DP change is reported
+  from benchmark runs, not asserted.
 - Full benchmark rerun (run_v6) after implementation.
 
 ## Error handling
