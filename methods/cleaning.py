@@ -293,19 +293,6 @@ def action_restore_labels(y_clean: np.ndarray) -> Callable:
     return _action
 
 
-def action_flip_labels() -> Callable:
-    """
-    Returns an action_fn that flips labels at given positions.
-    Use with mnar noise (feature corruption that can't be undone directly).
-    """
-    def _action(X_tr, y_tr, positions):
-        y_c = y_tr.copy()
-        if len(positions) > 0:
-            y_c[positions] = 1 - y_c[positions]
-        return X_tr.copy(), y_c
-    return _action
-
-
 # ---------------------------------------------------------------------------
 # clean_hybrid_auto — DISABLED (auto-routing hybrid; _detect_noise_type also disabled)
 # ---------------------------------------------------------------------------

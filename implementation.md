@@ -8,7 +8,11 @@ applies a noise-type-specific **action** (correct label, cap feature, remove row
 and measures test-set classification accuracy at each cleaning proportion from 0% to 100%.
 
 The benchmark covers three real-world datasets, four noise types, two model pipelines,
-and seven cleaning methods — including several novel approaches developed during this project.
+and three active cleaning methods — DataScope, CleanLab, and a random-order baseline —
+plus an outlier-only DataScope-removal variant. Four further methods developed during
+this project (CL-Adaptive, Kairos, DS-Hybrid, Auto-Hybrid) were evaluated on run_v2 and
+subsequently removed from the pipeline; they are documented below for the record, and
+their code exists only as disabled stubs in `methods/cleaning.py`.
 
 ---
 
@@ -26,10 +30,10 @@ and seven cleaning methods — including several novel approaches developed duri
 
 | Noise type | What is corrupted | Action applied at cleaning time |
 |---|---|---|
-| **Outlier** | One feature column — values replaced with extreme outliers (5× IQR above Q3) | Cap at 2-sigma of the clean distribution |
+| **Outlier** | One feature column — values overwritten with a fixed extreme constant (100) for a random fraction of rows | Cap at 2-sigma of the clean distribution |
 | **Random label** | Labels flipped uniformly at random to any other class | Restore original ground-truth label |
 | **NNAR** (Noise Not At Random) | Labels of a random fraction of the protected subgroup are flipped — noise rate depends on group membership, not on the label value itself | Restore original ground-truth label |
-| **MNAR** (Missing Not At Random) | Feature values of a random fraction of the protected subgroup are set to NaN — data absence is correlated with a sensitive attribute, simulating differential data-collection quality | Flip label (the missing feature value cannot be recovered; label flip is used as a proxy corrective action) |
+| **MNAR** (Missing Not At Random) | Feature values of a random fraction of the protected subgroup are set to NaN — data absence is correlated with a sensitive attribute, simulating differential data-collection quality | Remove the detected row (the missing feature value cannot be recovered) |
 
 ---
 
@@ -37,8 +41,8 @@ and seven cleaning methods — including several novel approaches developed duri
 
 | Key | Architecture | Notes |
 |---|---|---|
-| **p1a** | KNN imputer → StandardScaler → Logistic Regression | General-purpose; handles mixed feature types |
-| **p2b** | PCA (n=10) → SelectKBest (f_classif, k=8) → Logistic Regression | Dimensionality reduction before classification; better on high-dimensional feature sets |
+| **p1a** | ColumnTransformer union — numeric: MedianImputer → PowerTransformer (Yeo-Johnson) → StandardScaler; categorical: MostFrequentImputer → Logistic Regression (lbfgs) | General-purpose linear model; handles mixed feature types |
+| **p2b** | MedianImputer → StandardScaler → PCA (n = min(8, n_features)) → SelectKBest (f_classif, k = min(5, n_pca)) → Random Forest (100 trees) | Non-linear ensemble on reduced features; contrasts with p1a's linear classifier |
 
 ---
 
@@ -54,7 +58,7 @@ The default uses `ImportanceMethod.NEIGHBOR` — a KNN approximation that avoids
 **Implementation details (`methods/cleaning.py: clean_datascope`):**
 1. Fit the full pipeline on the noisy training set
 2. Compute Shapley importances via `ShapleyImportance(method=NEIGHBOR).fit(X_train).score(X_test)`
-3. Sort noisy positions by descending importance (most harmful first)
+3. Sort noisy positions by ascending Shapley importance (lowest = most harmful first)
 4. Incrementally apply `action_fn` to the top-k% and measure accuracy
 
 **Strengths:**
@@ -90,7 +94,7 @@ Obtains out-of-fold predicted class probabilities via 5-fold cross-validation, t
 
 ---
 
-### 3. CleanLab Adaptive (CL-Adaptive)
+### 3. CleanLab Adaptive (CL-Adaptive) — removed after run_v2
 
 **How it works:**
 Extends CleanLab by routing each flagged sample to one of two actions rather than applying the same action uniformly. The key insight is that not all suspicious samples should be treated equally — some have a clearly wrong label that can be corrected, while others are so uncertain that removal is safer.
@@ -126,10 +130,10 @@ If BC ≤ 5/9, the self-confidence distribution is unimodal (e.g. random label n
 
 ---
 
-### 4. Kairos
+### 4. Kairos — removed after run_v2
 
 **How it works:**
-Implements the Kairos data valuation framework (Lodino et al., NeurIPS 2025). Scores each training sample using two complementary signals:
+A simplified adaptation inspired by KAIROS (Zhu, Prashant, Cloninger & Salimi, "KAIROS: Scalable Model-Agnostic Data Valuation," NeurIPS 2025, arXiv:2506.23799). The original paper derives a closed-form MMD (Maximum Mean Discrepancy) contribution score with conditional kernels for unified label- and feature-error detection; this implementation instead hand-builds two separate signals and blends them heuristically:
 
 1. **Feature score** — RBF kernel similarity of each training sample to the test distribution minus its similarity to the training distribution. Samples that "look like" the test set are more valuable; samples that are anomalous relative to the test set are penalised.
 2. **Residual score** — P(correct label | x) from a logistic regression trained on the test set. Higher = label is consistent with the test-set distribution = likely clean.
@@ -162,7 +166,7 @@ Samples with the lowest combined score are cleaned first. The pipeline's feature
 
 ---
 
-### 5. DataScope Hybrid (DS-Hybrid)
+### 5. DataScope Hybrid (DS-Hybrid) — removed after run_v2
 
 **How it works:**
 Addresses a core weakness of DataScope (no label uncertainty signal) and CleanLab (no global accuracy impact signal) by blending both into a single ranking score over the known noisy positions:
@@ -190,7 +194,7 @@ Both signals are min-max normalised to [0, 1] before blending (default α = 0.5)
 
 ---
 
-### 6. Auto-Routing Hybrid (hybrid_auto)
+### 6. Auto-Routing Hybrid (hybrid_auto) — removed after run_v2
 
 **How it works:**
 Rather than applying a fixed method, the hybrid auto-router *detects* the likely noise type from the data and delegates to the empirically best method for that type:
@@ -405,14 +409,15 @@ label_cleaner/
 ├── data/
 │   └── datasets.py      # Dataset loaders and DatasetInfo (adult, german, titanic)
 ├── methods/
-│   ├── cleaning.py      # All 7 cleaning methods + action functions + threshold helpers
+│   ├── cleaning.py      # Active cleaners (DataScope, CleanLab, Random) + action functions; removed methods left as DISABLED stubs
 │   └── noise.py         # Noise injectors: inject_outlier, inject_rnd_label, inject_nnar, inject_mnar
 ├── orchestration/
 │   ├── catalog.py       # Pipeline factory definitions (p1a, p2b)
 │   └── experiments.py   # Experiment runners: run_{outlier,rnd_label,nnar,mnar}_experiment_with_artifacts
 └── scripts/
     ├── run_all_experiments.py      # CLI driver: runs full matrix, saves figures, caches, and report.md
-    └── generate_combined_report.py # Reads per-dataset caches, produces combined_report.md + figures
+    ├── generate_combined_report.py # Reads per-dataset caches, produces combined_report.md + figures
+    └── generate_ppt.py             # Builds results.pptx from run_v5 caches and figures
 ```
 
 ### Key dataclasses (`core/models.py`)
@@ -421,31 +426,22 @@ label_cleaner/
 @dataclass
 class MethodCurves:
     datascope:          List[float]           # accuracy at each cleaning proportion
-    cleanlab:           List[float]
     random_mean:        List[float]           # mean over 3 random seeds
     random_std:         List[float]
+    cleanlab:           List[float]
     baseline:           float                 # accuracy at 0% cleaning
     proportions:        np.ndarray
-    kairos:             Optional[List[float]] = None
-    cleanlab_adaptive:  Optional[List[float]] = None
-    datascope_hybrid:   Optional[List[float]] = None
-    hybrid_auto:        Optional[List[float]] = None
     datascope_removal:  Optional[List[float]] = None  # outlier only
 ```
 
-### Threshold helper functions (`methods/cleaning.py`)
-
-| Function | Purpose |
-|---|---|
-| `_otsu_threshold(scores)` | Otsu's method with bimodality coefficient guard |
-| `_kde_valley_threshold(scores)` | KDE valley detection (Scott bandwidth + peak prominence) — experimental |
-| `_detect_noise_type(X, y, pred_probs)` | Heuristic noise classifier for Auto-Hybrid routing |
-
-### Action functions
+### Action functions (`methods/cleaning.py`)
 
 | Function | Use with |
 |---|---|
 | `action_cap(col_idx, cap_value)` | Outlier noise — caps feature at 2-sigma |
 | `action_restore_labels(y_clean)` | Random label / NNAR — restores ground-truth label |
-| `action_flip_labels()` | MNAR — flips label as proxy for feature-damage correction |
-| `action_remove()` | Outlier removal variant (DataScope only) |
+| `action_remove()` | MNAR (removes detected rows) and the outlier removal variant |
+
+The threshold helpers used by the removed methods (`_otsu_threshold`,
+`_kde_valley_threshold`, `_detect_noise_type`) were deleted along with them;
+only DISABLED comment markers remain in `methods/cleaning.py`.

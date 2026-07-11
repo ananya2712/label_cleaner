@@ -21,16 +21,11 @@ Modular rewrite of the original experiment codebase.
 - `services/`
   - `service.py` — microservice-style facade (`LabelCleanerService`)
 
-### Compatibility Wrappers
-
-Top-level modules (`datasets.py`, `noise.py`, `pipelines.py`, `cleaning.py`, etc.)
-are retained as import wrappers for backward compatibility.
-
 ## Example
 
 ```python
 from pathlib import Path
-from label_cleaner.service import LabelCleanerService
+from label_cleaner.services.service import LabelCleanerService
 
 svc = LabelCleanerService(datasets_dir=Path("datasets"))
 result = svc.run(

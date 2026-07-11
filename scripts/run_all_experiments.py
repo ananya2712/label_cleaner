@@ -121,8 +121,8 @@ def _pipeline_factory(ds, pipeline_key: str):
 
 
 def _importance_method(pipeline_key: str) -> ImportanceMethod:
-    # p2b uses a non-KNN model (PCA + SelectKBest + LogisticRegression), so TMC
-    # Shapley is a better fit than the NEIGHBOR approximation used for p1a.
+    # NEIGHBOR is used for both pipelines: TMC Shapley was evaluated for p2b
+    # (RandomForest classifier) but rejected for runtime cost — see implementation.md.
     return ImportanceMethod.NEIGHBOR
 
 
