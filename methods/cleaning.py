@@ -187,6 +187,73 @@ def clean_datascope_fair(
 
 
 # ---------------------------------------------------------------------------
+# Fair heuristic (model-free DP-impact ranking)
+# ---------------------------------------------------------------------------
+
+def _dp_heuristic_scores(y_train: np.ndarray, protected_train: np.ndarray,
+                         candidates: np.ndarray) -> np.ndarray:
+    """
+    Model-free DP-impact score per candidate: the reduction in the
+    training-label selection-rate gap if that sample alone were removed
+    from its (group, label) cell. Positive = removal shrinks the gap.
+    Each candidate is scored independently against the ORIGINAL counts.
+    """
+    prot = np.asarray(protected_train, dtype=bool)
+    n_p, n_u = int(prot.sum()), int((~prot).sum())
+    pos_p = int(y_train[prot].sum())
+    pos_u = int(y_train[~prot].sum())
+    rate_p = pos_p / n_p if n_p else 0.0
+    rate_u = pos_u / n_u if n_u else 0.0
+    base_gap = abs(rate_p - rate_u)
+
+    scores = np.empty(len(candidates), dtype=float)
+    for k, i in enumerate(candidates):
+        if prot[i]:
+            n_, pos_ = n_p - 1, pos_p - int(y_train[i])
+            gap = abs((pos_ / n_ if n_ else 0.0) - rate_u)
+        else:
+            n_, pos_ = n_u - 1, pos_u - int(y_train[i])
+            gap = abs(rate_p - (pos_ / n_ if n_ else 0.0))
+        scores[k] = base_gap - gap
+    return scores
+
+
+def clean_fair_heuristic(
+    pipeline_factory: Callable,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    noisy_positions: np.ndarray,
+    action_fn: Callable,
+    proportions: np.ndarray,
+    protected_test: np.ndarray,
+    protected_train: np.ndarray,
+) -> Tuple[List[float], List[float], np.ndarray]:
+    """
+    Heuristic fairness baseline: rank noisy candidates by the model-free
+    DP-impact score (largest training-label gap reduction first, stable
+    sort for ties), then run the standard incremental cleaning loop.
+    No model fits are used for ranking.
+
+    Returns (accs, dps, ranked) — same shape as clean_datascope_fair.
+    """
+    scores = _dp_heuristic_scores(y_train, protected_train, noisy_positions)
+    order = np.argsort(-scores, kind="stable")
+    ranked_noisy = noisy_positions[order]
+
+    accs, dps = [], []
+    for p in proportions:
+        n_clean   = int(p * len(ranked_noisy))
+        X_c, y_c  = action_fn(X_train, y_train, ranked_noisy[:n_clean])
+        acc, dp = _safe_eval(pipeline_factory, X_c, y_c, X_test, y_test, protected_test)
+        accs.append(acc)
+        dps.append(dp)
+
+    return accs, dps, ranked_noisy
+
+
+# ---------------------------------------------------------------------------
 # clean_datascope_hybrid — DISABLED (blending DataScope + CleanLab signals)
 # ---------------------------------------------------------------------------
 

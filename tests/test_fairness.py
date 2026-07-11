@@ -108,6 +108,26 @@ def test_clean_datascope_fair_reduces_gap():
     assert dps[1] <= dps[0] + 0.02, dps
 
 
+def test_fair_heuristic_ranking_order():
+    from label_cleaner.methods.cleaning import _dp_heuristic_scores
+
+    # protected: labels [0,0,1] (rate 1/3); unprotected: [1,1] (rate 1).
+    y = np.array([0, 0, 1, 1, 1])
+    prot = np.array([True, True, True, False, False])
+    candidates = np.array([0, 2, 3])
+    scores = _dp_heuristic_scores(y, prot, candidates)
+    # Removing candidate 0 (protected, y=0) raises the protected rate to 1/2:
+    # gap 2/3 -> 1/2, reduction > 0. Removing candidate 2 (protected, y=1)
+    # lowers it to 0: gap -> 1, reduction < 0. Removing candidate 3
+    # (unprotected, y=1) keeps unprotected rate 1: reduction = 0.
+    assert scores[0] > scores[2]
+    assert scores[0] > scores[1]
+    base = abs(1/3 - 1.0)
+    assert abs(scores[0] - (base - abs(1/2 - 1.0))) < 1e-12
+    assert abs(scores[2] - 0.0) < 1e-12
+    assert abs(scores[1] - (base - abs(0.0 - 1.0))) < 1e-12
+
+
 if __name__ == "__main__":
     test_gap_basic()
     test_gap_zero_when_equal()
@@ -115,4 +135,5 @@ if __name__ == "__main__":
     test_dp_utility_neighbor_sign()
     test_dp_utility_montecarlo_runs()
     test_clean_datascope_fair_reduces_gap()
+    test_fair_heuristic_ranking_order()
     print("test_fairness: OK")

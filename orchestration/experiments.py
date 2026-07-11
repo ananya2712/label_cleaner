@@ -21,6 +21,7 @@ from ..methods.cleaning import (
     clean_cleanlab,
     clean_datascope,
     clean_datascope_fair,
+    clean_fair_heuristic,
     clean_random,
 )
 from ..data.datasets import DatasetInfo
@@ -52,7 +53,7 @@ def _random_rankings(noisy_positions: np.ndarray, n_seeds: int = 3):
 
 
 def _run_methods(pipeline_factory: Callable, X_train_noisy, y_train_noisy, X_test, y_test,
-                 noisy_positions, action_fn, proportions, protected_test,
+                 noisy_positions, action_fn, proportions, protected_test, protected_train,
                  n_cleanlab_jobs: int = 1,
                  importance_method: ImportanceMethod = ImportanceMethod.NEIGHBOR,
                  mc_iterations: int = 50) -> Dict:
@@ -74,10 +75,15 @@ def _run_methods(pipeline_factory: Callable, X_train_noisy, y_train_noisy, X_tes
         pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
         noisy_positions, action_fn, proportions, protected_test,
     )
+    accs_fh, dps_fh, fh_ranked = clean_fair_heuristic(
+        pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
+        noisy_positions, action_fn, proportions, protected_test, protected_train,
+    )
     return {
         "datascope": {"acc": accs_ds, "dp": dps_ds, "ranked": ds_ranked},
         "cleanlab": {"acc": accs_cl, "dp": dps_cl, "ranked": cl_ranked},
         "datascope_fair": {"acc": accs_dsf, "dp": dps_dsf, "ranked": dsf_ranked},
+        "fair_heuristic": {"acc": accs_fh, "dp": dps_fh, "ranked": fh_ranked},
         "random": {"acc_mean": rnd_acc_mean, "acc_std": rnd_acc_std,
                    "dp_mean": rnd_dp_mean, "dp_std": rnd_dp_std},
     }
@@ -121,6 +127,7 @@ def run_outlier_experiment_with_artifacts(
     bundle = build_noise_bundle_outlier(split, ds.outlier_col_idx, noise_level=noise_level)
 
     protected_test = ds.protected_group_mask[split.test_idx]
+    protected_train = ds.protected_group_mask[split.train_idx]
     baseline, baseline_dp = _baseline_eval(
         pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test,
         protected_test,
@@ -130,7 +137,7 @@ def run_outlier_experiment_with_artifacts(
         pipeline_factory,
         bundle.X_noisy, bundle.y_noisy,
         split.X_test, split.y_test,
-        bundle.noisy_positions, cap_fn, proportions, protected_test,
+        bundle.noisy_positions, cap_fn, proportions, protected_test, protected_train,
         importance_method=importance_method, mc_iterations=mc_iterations,
     )
     ds_ranked = results["datascope"]["ranked"]
@@ -163,6 +170,8 @@ def run_outlier_experiment_with_artifacts(
         datascope_removal_dp=dps_rm,
         datascope_fair=results["datascope_fair"]["acc"],
         datascope_fair_dp=results["datascope_fair"]["dp"],
+        fair_heuristic=results["fair_heuristic"]["acc"],
+        fair_heuristic_dp=results["fair_heuristic"]["dp"],
     )
     return ExperimentArtifacts(
         curves=curves,
@@ -172,6 +181,7 @@ def run_outlier_experiment_with_artifacts(
         cleanlab_ranked=cl_ranked,
         random_rankings=_random_rankings(bundle.noisy_positions),
         datascope_fair_ranked=results["datascope_fair"]["ranked"],
+        fair_heuristic_ranked=results["fair_heuristic"]["ranked"],
     )
 
 
@@ -200,6 +210,7 @@ def run_random_label_experiment_with_artifacts(
         metadata={},
     )
     protected_test = ds.protected_group_mask[split.test_idx]
+    protected_train = ds.protected_group_mask[split.train_idx]
     baseline, baseline_dp = _baseline_eval(
         pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test,
         protected_test,
@@ -209,7 +220,7 @@ def run_random_label_experiment_with_artifacts(
         pipeline_factory,
         bundle.X_noisy, bundle.y_noisy,
         split.X_test, split.y_test,
-        bundle.noisy_positions, restore_fn, proportions, protected_test,
+        bundle.noisy_positions, restore_fn, proportions, protected_test, protected_train,
         importance_method=importance_method, mc_iterations=mc_iterations,
     )
     ds_ranked = results["datascope"]["ranked"]
@@ -227,6 +238,8 @@ def run_random_label_experiment_with_artifacts(
         random_dp_std=results["random"]["dp_std"],
         datascope_fair=results["datascope_fair"]["acc"],
         datascope_fair_dp=results["datascope_fair"]["dp"],
+        fair_heuristic=results["fair_heuristic"]["acc"],
+        fair_heuristic_dp=results["fair_heuristic"]["dp"],
     )
     return ExperimentArtifacts(
         curves=curves,
@@ -236,6 +249,7 @@ def run_random_label_experiment_with_artifacts(
         cleanlab_ranked=cl_ranked,
         random_rankings=_random_rankings(bundle.noisy_positions),
         datascope_fair_ranked=results["datascope_fair"]["ranked"],
+        fair_heuristic_ranked=results["fair_heuristic"]["ranked"],
     )
 
 
@@ -278,7 +292,7 @@ def run_nnar_experiment_with_artifacts(
         pipeline_factory,
         bundle.X_noisy, bundle.y_noisy,
         split.X_test, split.y_test,
-        bundle.noisy_positions, restore_fn, proportions, protected_test,
+        bundle.noisy_positions, restore_fn, proportions, protected_test, protected_train,
         importance_method=importance_method, mc_iterations=mc_iterations,
     )
     ds_ranked = results["datascope"]["ranked"]
@@ -296,6 +310,8 @@ def run_nnar_experiment_with_artifacts(
         random_dp_std=results["random"]["dp_std"],
         datascope_fair=results["datascope_fair"]["acc"],
         datascope_fair_dp=results["datascope_fair"]["dp"],
+        fair_heuristic=results["fair_heuristic"]["acc"],
+        fair_heuristic_dp=results["fair_heuristic"]["dp"],
     )
     return ExperimentArtifacts(
         curves=curves,
@@ -305,6 +321,7 @@ def run_nnar_experiment_with_artifacts(
         cleanlab_ranked=cl_ranked,
         random_rankings=_random_rankings(bundle.noisy_positions),
         datascope_fair_ranked=results["datascope_fair"]["ranked"],
+        fair_heuristic_ranked=results["fair_heuristic"]["ranked"],
     )
 
 
@@ -348,7 +365,7 @@ def run_mnar_experiment_with_artifacts(
         pipeline_factory,
         bundle.X_noisy, bundle.y_noisy,
         split.X_test, split.y_test,
-        bundle.noisy_positions, remove_fn, proportions, protected_test,
+        bundle.noisy_positions, remove_fn, proportions, protected_test, protected_train,
         importance_method=importance_method, mc_iterations=mc_iterations,
     )
     ds_ranked = results["datascope"]["ranked"]
@@ -366,6 +383,8 @@ def run_mnar_experiment_with_artifacts(
         random_dp_std=results["random"]["dp_std"],
         datascope_fair=results["datascope_fair"]["acc"],
         datascope_fair_dp=results["datascope_fair"]["dp"],
+        fair_heuristic=results["fair_heuristic"]["acc"],
+        fair_heuristic_dp=results["fair_heuristic"]["dp"],
     )
     return ExperimentArtifacts(
         curves=curves,
@@ -375,6 +394,7 @@ def run_mnar_experiment_with_artifacts(
         cleanlab_ranked=cl_ranked,
         random_rankings=_random_rankings(bundle.noisy_positions),
         datascope_fair_ranked=results["datascope_fair"]["ranked"],
+        fair_heuristic_ranked=results["fair_heuristic"]["ranked"],
     )
 
 

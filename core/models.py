@@ -35,6 +35,8 @@ class MethodCurves:
     datascope_removal_dp: Optional[List[float]] = None
     datascope_fair: Optional[List[float]] = None
     datascope_fair_dp: Optional[List[float]] = None
+    fair_heuristic: Optional[List[float]] = None
+    fair_heuristic_dp: Optional[List[float]] = None
 
 
 @dataclass
@@ -61,3 +63,4 @@ class ExperimentArtifacts:
     cleanlab_ranked: np.ndarray
     random_rankings: List[np.ndarray]
     datascope_fair_ranked: np.ndarray = None
+    fair_heuristic_ranked: np.ndarray = None
