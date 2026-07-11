@@ -7,13 +7,14 @@ Each run_* function orchestrates:
   3) DataScope / Random / CleanLab cleaning methodologies
 """
 
-from typing import Callable
+from typing import Callable, Dict, Tuple
 
 import numpy as np
 from datascope.importance.shapley import ImportanceMethod
 from sklearn.metrics import accuracy_score
 
 from ..methods.cleaning import (
+    _safe_eval,
     action_cap,
     action_remove,
     action_restore_labels,
@@ -23,6 +24,7 @@ from ..methods.cleaning import (
 )
 from ..data.datasets import DatasetInfo
 from ..core.models import ExperimentArtifacts, MethodCurves, NoiseBundle
+from ..methods.fairness import demographic_parity_gap
 from ..methods.noise import inject_mnar, inject_nnar, inject_outlier, inject_rnd_label
 from ..core.prep import prepare_fixed_split
 
@@ -30,10 +32,12 @@ from ..core.prep import prepare_fixed_split
 DEFAULT_PROPORTIONS = np.linspace(0, 1, num=21)
 
 
-def _baseline_acc(pipeline_factory: Callable, X_train, y_train, X_test, y_test) -> float:
+def _baseline_eval(pipeline_factory: Callable, X_train, y_train, X_test, y_test,
+                   protected_test) -> Tuple[float, float]:
     p = pipeline_factory()
     p.fit(X_train, y_train)
-    return accuracy_score(y_test, p.predict(X_test))
+    y_pred = p.predict(X_test)
+    return accuracy_score(y_test, y_pred), demographic_parity_gap(y_pred, protected_test)
 
 
 def _random_rankings(noisy_positions: np.ndarray, n_seeds: int = 3):
@@ -47,23 +51,30 @@ def _random_rankings(noisy_positions: np.ndarray, n_seeds: int = 3):
 
 
 def _run_methods(pipeline_factory: Callable, X_train_noisy, y_train_noisy, X_test, y_test,
-                 noisy_positions, action_fn, proportions, n_cleanlab_jobs: int = 1,
+                 noisy_positions, action_fn, proportions, protected_test,
+                 n_cleanlab_jobs: int = 1,
                  importance_method: ImportanceMethod = ImportanceMethod.NEIGHBOR,
-                 mc_iterations: int = 50):
-    accs_ds, ds_ranked = clean_datascope(
+                 mc_iterations: int = 50) -> Dict:
+    accs_ds, dps_ds, ds_ranked = clean_datascope(
         pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
         noisy_positions, action_fn, proportions,
         importance_method=importance_method, mc_iterations=mc_iterations,
+        protected_test=protected_test,
     )
-    rnd_mean, rnd_std = clean_random(
+    rnd_acc_mean, rnd_acc_std, rnd_dp_mean, rnd_dp_std = clean_random(
         pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
-        noisy_positions, action_fn, proportions
+        noisy_positions, action_fn, proportions, protected_test=protected_test,
     )
-    accs_cl, cl_ranked = clean_cleanlab(
+    accs_cl, dps_cl, cl_ranked = clean_cleanlab(
         pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
-        action_fn, proportions, n_jobs=n_cleanlab_jobs
+        action_fn, proportions, n_jobs=n_cleanlab_jobs, protected_test=protected_test,
     )
-    return accs_ds, rnd_mean, rnd_std, accs_cl, ds_ranked, cl_ranked
+    return {
+        "datascope": {"acc": accs_ds, "dp": dps_ds, "ranked": ds_ranked},
+        "cleanlab": {"acc": accs_cl, "dp": dps_cl, "ranked": cl_ranked},
+        "random": {"acc_mean": rnd_acc_mean, "acc_std": rnd_acc_std,
+                   "dp_mean": rnd_dp_mean, "dp_std": rnd_dp_std},
+    }
 
 
 def build_noise_bundle_outlier(split, outlier_col_idx: int, noise_level: float,
@@ -103,36 +114,47 @@ def run_outlier_experiment_with_artifacts(
     split = prepare_fixed_split(ds.X, ds.y)
     bundle = build_noise_bundle_outlier(split, ds.outlier_col_idx, noise_level=noise_level)
 
-    baseline = _baseline_acc(
-        pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test
+    protected_test = ds.protected_group_mask[split.test_idx]
+    baseline, baseline_dp = _baseline_eval(
+        pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test,
+        protected_test,
     )
     cap_fn = action_cap(ds.outlier_col_idx, bundle.metadata["cap_value"])
-    accs_ds, rnd_mean, rnd_std, accs_cl, ds_ranked, cl_ranked = _run_methods(
+    results = _run_methods(
         pipeline_factory,
         bundle.X_noisy, bundle.y_noisy,
         split.X_test, split.y_test,
-        bundle.noisy_positions, cap_fn, proportions,
+        bundle.noisy_positions, cap_fn, proportions, protected_test,
         importance_method=importance_method, mc_iterations=mc_iterations,
     )
+    ds_ranked = results["datascope"]["ranked"]
+    cl_ranked = results["cleanlab"]["ranked"]
 
     # Outlier-specific removal curve (drop top-k DataScope-ranked noisy rows)
     remove_fn = action_remove()
-    accs_rm = []
+    accs_rm, dps_rm = [], []
     for p in proportions:
         n_rm = int(p * len(ds_ranked))
         X_c, y_c = remove_fn(bundle.X_noisy, bundle.y_noisy, ds_ranked[:n_rm])
-        pipe = pipeline_factory()
-        pipe.fit(X_c, y_c)
-        accs_rm.append(accuracy_score(split.y_test, pipe.predict(split.X_test)))
+        acc, dp = _safe_eval(pipeline_factory, X_c, y_c, split.X_test, split.y_test,
+                             protected_test)
+        accs_rm.append(acc)
+        dps_rm.append(dp)
 
     curves = MethodCurves(
-        datascope=accs_ds,
-        random_mean=rnd_mean,
-        random_std=rnd_std,
-        cleanlab=accs_cl,
+        datascope=results["datascope"]["acc"],
+        random_mean=results["random"]["acc_mean"],
+        random_std=results["random"]["acc_std"],
+        cleanlab=results["cleanlab"]["acc"],
         baseline=baseline,
         proportions=proportions,
         datascope_removal=accs_rm,
+        baseline_dp=baseline_dp,
+        datascope_dp=results["datascope"]["dp"],
+        cleanlab_dp=results["cleanlab"]["dp"],
+        random_dp_mean=results["random"]["dp_mean"],
+        random_dp_std=results["random"]["dp_std"],
+        datascope_removal_dp=dps_rm,
     )
     return ExperimentArtifacts(
         curves=curves,
@@ -168,20 +190,32 @@ def run_random_label_experiment_with_artifacts(
         noisy_positions=noisy_positions,
         metadata={},
     )
-    baseline = _baseline_acc(
-        pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test
+    protected_test = ds.protected_group_mask[split.test_idx]
+    baseline, baseline_dp = _baseline_eval(
+        pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test,
+        protected_test,
     )
     restore_fn = action_restore_labels(split.y_train)
-    accs_ds, rnd_mean, rnd_std, accs_cl, ds_ranked, cl_ranked = _run_methods(
+    results = _run_methods(
         pipeline_factory,
         bundle.X_noisy, bundle.y_noisy,
         split.X_test, split.y_test,
-        bundle.noisy_positions, restore_fn, proportions,
+        bundle.noisy_positions, restore_fn, proportions, protected_test,
         importance_method=importance_method, mc_iterations=mc_iterations,
     )
+    ds_ranked = results["datascope"]["ranked"]
+    cl_ranked = results["cleanlab"]["ranked"]
     curves = MethodCurves(
-        datascope=accs_ds, random_mean=rnd_mean, random_std=rnd_std,
-        cleanlab=accs_cl, baseline=baseline, proportions=proportions,
+        datascope=results["datascope"]["acc"],
+        random_mean=results["random"]["acc_mean"],
+        random_std=results["random"]["acc_std"],
+        cleanlab=results["cleanlab"]["acc"],
+        baseline=baseline, proportions=proportions,
+        baseline_dp=baseline_dp,
+        datascope_dp=results["datascope"]["dp"],
+        cleanlab_dp=results["cleanlab"]["dp"],
+        random_dp_mean=results["random"]["dp_mean"],
+        random_dp_std=results["random"]["dp_std"],
     )
     return ExperimentArtifacts(
         curves=curves,
@@ -222,20 +256,32 @@ def run_nnar_experiment_with_artifacts(
         noisy_positions=noisy_positions,
         metadata={},
     )
-    baseline = _baseline_acc(
-        pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test
+    protected_test = ds.protected_group_mask[split.test_idx]
+    baseline, baseline_dp = _baseline_eval(
+        pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test,
+        protected_test,
     )
     restore_fn = action_restore_labels(split.y_train)
-    accs_ds, rnd_mean, rnd_std, accs_cl, ds_ranked, cl_ranked = _run_methods(
+    results = _run_methods(
         pipeline_factory,
         bundle.X_noisy, bundle.y_noisy,
         split.X_test, split.y_test,
-        bundle.noisy_positions, restore_fn, proportions,
+        bundle.noisy_positions, restore_fn, proportions, protected_test,
         importance_method=importance_method, mc_iterations=mc_iterations,
     )
+    ds_ranked = results["datascope"]["ranked"]
+    cl_ranked = results["cleanlab"]["ranked"]
     curves = MethodCurves(
-        datascope=accs_ds, random_mean=rnd_mean, random_std=rnd_std,
-        cleanlab=accs_cl, baseline=baseline, proportions=proportions,
+        datascope=results["datascope"]["acc"],
+        random_mean=results["random"]["acc_mean"],
+        random_std=results["random"]["acc_std"],
+        cleanlab=results["cleanlab"]["acc"],
+        baseline=baseline, proportions=proportions,
+        baseline_dp=baseline_dp,
+        datascope_dp=results["datascope"]["dp"],
+        cleanlab_dp=results["cleanlab"]["dp"],
+        random_dp_mean=results["random"]["dp_mean"],
+        random_dp_std=results["random"]["dp_std"],
     )
     return ExperimentArtifacts(
         curves=curves,
@@ -276,21 +322,33 @@ def run_mnar_experiment_with_artifacts(
         noisy_positions=noisy_positions,
         metadata={},
     )
-    baseline = _baseline_acc(
-        pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test
+    protected_test = ds.protected_group_mask[split.test_idx]
+    baseline, baseline_dp = _baseline_eval(
+        pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test,
+        protected_test,
     )
     # For MNAR feature corruption, remove the detected rows rather than altering labels.
     remove_fn = action_remove()
-    accs_ds, rnd_mean, rnd_std, accs_cl, ds_ranked, cl_ranked = _run_methods(
+    results = _run_methods(
         pipeline_factory,
         bundle.X_noisy, bundle.y_noisy,
         split.X_test, split.y_test,
-        bundle.noisy_positions, remove_fn, proportions,
+        bundle.noisy_positions, remove_fn, proportions, protected_test,
         importance_method=importance_method, mc_iterations=mc_iterations,
     )
+    ds_ranked = results["datascope"]["ranked"]
+    cl_ranked = results["cleanlab"]["ranked"]
     curves = MethodCurves(
-        datascope=accs_ds, random_mean=rnd_mean, random_std=rnd_std,
-        cleanlab=accs_cl, baseline=baseline, proportions=proportions,
+        datascope=results["datascope"]["acc"],
+        random_mean=results["random"]["acc_mean"],
+        random_std=results["random"]["acc_std"],
+        cleanlab=results["cleanlab"]["acc"],
+        baseline=baseline, proportions=proportions,
+        baseline_dp=baseline_dp,
+        datascope_dp=results["datascope"]["dp"],
+        cleanlab_dp=results["cleanlab"]["dp"],
+        random_dp_mean=results["random"]["dp_mean"],
+        random_dp_std=results["random"]["dp_std"],
     )
     return ExperimentArtifacts(
         curves=curves,

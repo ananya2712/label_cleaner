@@ -27,6 +27,12 @@ class MethodCurves:
     baseline: float
     proportions: np.ndarray
     datascope_removal: Optional[List[float]] = None
+    baseline_dp: Optional[float] = None
+    datascope_dp: Optional[List[float]] = None
+    cleanlab_dp: Optional[List[float]] = None
+    random_dp_mean: Optional[List[float]] = None
+    random_dp_std: Optional[List[float]] = None
+    datascope_removal_dp: Optional[List[float]] = None
 
 
 @dataclass

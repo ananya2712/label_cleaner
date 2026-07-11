@@ -27,6 +27,8 @@ from datascope.importance.shapley import ImportanceMethod, ShapleyImportance
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import cross_val_predict
 
+from .fairness import demographic_parity_gap
+
 
 # ---------------------------------------------------------------------------
 # DataScope
@@ -49,22 +51,30 @@ def _compute_importances(
     return imp.fit(X_train, y_train).score(X_test, y_test)
 
 
-def _safe_accuracy(
+def _safe_eval(
     pipeline_factory: Callable,
     X_train: np.ndarray,
     y_train: np.ndarray,
     X_test: np.ndarray,
     y_test: np.ndarray,
-) -> float:
-    """Return NaN when aggressive filtering leaves no trainable dataset."""
+    protected_test: np.ndarray,
+) -> Tuple[float, float]:
+    """Fit and score one cleaned dataset.
+
+    Returns (accuracy, dp_gap) on the test set; (NaN, NaN) when aggressive
+    filtering leaves no trainable dataset."""
     if len(X_train) == 0 or len(np.unique(y_train)) < 2:
-        return float("nan")
+        return float("nan"), float("nan")
     pipeline = pipeline_factory()
     try:
         pipeline.fit(X_train, y_train)
-        return accuracy_score(y_test, pipeline.predict(X_test))
+        y_pred = pipeline.predict(X_test)
+        return (
+            accuracy_score(y_test, y_pred),
+            demographic_parity_gap(y_pred, protected_test),
+        )
     except ValueError:
-        return float("nan")
+        return float("nan"), float("nan")
 
 
 def clean_datascope(
@@ -78,7 +88,8 @@ def clean_datascope(
     proportions: np.ndarray,
     importance_method: ImportanceMethod = ImportanceMethod.NEIGHBOR,
     mc_iterations: int = 50,
-) -> Tuple[List[float], np.ndarray]:
+    protected_test: np.ndarray = None,
+) -> Tuple[List[float], List[float], np.ndarray]:
     """
     DataScope cleaning: rank noisy samples by Shapley importance (most harmful
     first), then incrementally apply `action_fn` to the top-k% and measure accuracy.
@@ -92,10 +103,12 @@ def clean_datascope(
     action_fn        : callable(X_tr, y_tr, positions) → (X_tr_clean, y_tr_clean)
                        encapsulates the noise-type-specific cleaning action
     proportions      : array of fractions in [0, 1] — cleaning proportions to evaluate
+    protected_test    : bool mask over test rows for demographic parity measurement
 
     Returns
     -------
     accs         : accuracy at each proportion
+    dps          : demographic parity gap at each proportion
     ranked_noisy : noisy_positions sorted most-harmful first (DataScope order)
     """
     pipeline = pipeline_factory()
@@ -105,13 +118,15 @@ def clean_datascope(
     sorted_order = np.argsort(importances[noisy_positions])  # ascending: lowest (most harmful) Shapley importance first
     ranked_noisy = noisy_positions[sorted_order]
 
-    accs = []
+    accs, dps = [], []
     for p in proportions:
         n_clean   = int(p * len(ranked_noisy))
         X_c, y_c  = action_fn(X_train, y_train, ranked_noisy[:n_clean])
-        accs.append(_safe_accuracy(pipeline_factory, X_c, y_c, X_test, y_test))
+        acc, dp = _safe_eval(pipeline_factory, X_c, y_c, X_test, y_test, protected_test)
+        accs.append(acc)
+        dps.append(dp)
 
-    return accs, ranked_noisy
+    return accs, dps, ranked_noisy
 
 
 
@@ -133,7 +148,8 @@ def clean_cleanlab(
     action_fn: Callable,
     proportions: np.ndarray,
     n_jobs: int = 1,
-) -> Tuple[List[float], np.ndarray]:
+    protected_test: np.ndarray = None,
+) -> Tuple[List[float], List[float], np.ndarray]:
     """
     CleanLab cleaning: rank ALL training samples by self_confidence score
     (most suspicious first), then incrementally apply `action_fn` to top-k%.
@@ -150,10 +166,12 @@ def clean_cleanlab(
     action_fn        : callable(X_tr, y_tr, positions) → (X_tr_clean, y_tr_clean)
     proportions      : array of fractions in [0, 1]
     n_jobs           : parallelism for cross_val_predict (default 1 for safety)
+    protected_test    : bool mask over test rows for demographic parity measurement
 
     Returns
     -------
     accs        : accuracy at each proportion
+    dps         : demographic parity gap at each proportion
     cl_ranked   : all training indices ranked most-to-least suspicious
     """
     pipeline   = pipeline_factory()
@@ -168,13 +186,15 @@ def clean_cleanlab(
         n_jobs=n_jobs,
     )
 
-    accs = []
+    accs, dps = [], []
     for p in proportions:
         n_clean   = int(p * len(cl_ranked))
         X_c, y_c  = action_fn(X_train, y_train, cl_ranked[:n_clean])
-        accs.append(_safe_accuracy(pipeline_factory, X_c, y_c, X_test, y_test))
+        acc, dp = _safe_eval(pipeline_factory, X_c, y_c, X_test, y_test, protected_test)
+        accs.append(acc)
+        dps.append(dp)
 
-    return accs, cl_ranked
+    return accs, dps, cl_ranked
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +217,8 @@ def clean_random(
     action_fn: Callable,
     proportions: np.ndarray,
     n_seeds: int = 3,
-) -> Tuple[List[float], List[float]]:
+    protected_test: np.ndarray = None,
+) -> Tuple[List[float], List[float], List[float], List[float]]:
     """
     Random cleaning baseline: shuffle noisy_positions randomly and apply
     `action_fn` to top-k%.  Repeated over `n_seeds` shuffles; mean and std
@@ -215,27 +236,34 @@ def clean_random(
     action_fn        : callable(X_tr, y_tr, positions) → (X_tr_clean, y_tr_clean)
     proportions      : array of fractions in [0, 1]
     n_seeds          : number of random shuffles to average over
+    protected_test    : bool mask over test rows for demographic parity measurement
 
     Returns
     -------
     mean_accs : mean accuracy at each proportion across seeds
     std_accs  : std  accuracy at each proportion across seeds
+    mean_dps  : mean demographic parity gap at each proportion across seeds
+    std_dps   : std  demographic parity gap at each proportion across seeds
     """
-    all_accs = []
+    all_accs, all_dps = [], []
     for seed in range(n_seeds):
         rng  = np.random.RandomState(seed + 100)
         perm = noisy_positions.copy()
         rng.shuffle(perm)
 
-        seed_accs = []
+        seed_accs, seed_dps = [], []
         for p in proportions:
             n_clean  = int(p * len(perm))
             X_c, y_c = action_fn(X_train, y_train, perm[:n_clean])
-            seed_accs.append(_safe_accuracy(pipeline_factory, X_c, y_c, X_test, y_test))
+            acc, dp = _safe_eval(pipeline_factory, X_c, y_c, X_test, y_test, protected_test)
+            seed_accs.append(acc)
+            seed_dps.append(dp)
         all_accs.append(seed_accs)
+        all_dps.append(seed_dps)
 
-    arr = np.array(all_accs)
-    return arr.mean(axis=0).tolist(), arr.std(axis=0).tolist()
+    acc_arr, dp_arr = np.array(all_accs), np.array(all_dps)
+    return (acc_arr.mean(axis=0).tolist(), acc_arr.std(axis=0).tolist(),
+            dp_arr.mean(axis=0).tolist(), dp_arr.std(axis=0).tolist())
 
 
 # ---------------------------------------------------------------------------
