@@ -232,6 +232,16 @@ def _curves_from_cache(cache_dir: Path) -> MethodCurves:
         baseline=c["baseline"],
         proportions=np.array(c["proportions"]),
         datascope_removal=c.get("datascope_removal"),
+        baseline_dp=c.get("baseline_dp"),
+        datascope_dp=c.get("datascope_dp"),
+        cleanlab_dp=c.get("cleanlab_dp"),
+        random_dp_mean=c.get("random_dp_mean"),
+        random_dp_std=c.get("random_dp_std"),
+        datascope_removal_dp=c.get("datascope_removal_dp"),
+        datascope_fair=c.get("datascope_fair"),
+        datascope_fair_dp=c.get("datascope_fair_dp"),
+        fair_heuristic=c.get("fair_heuristic"),
+        fair_heuristic_dp=c.get("fair_heuristic_dp"),
     )
 
 
@@ -260,6 +270,39 @@ def _plot_curves(path: Path, dataset: str, noise_type: str, pipeline_key: str, c
         "Blue=DataScope, Red dashed=CleanLab, Orange dashed=Random baseline (±1σ shaded)",
         fontsize=9,
     )
+    ax.grid(True, linestyle=":", linewidth=0.6, alpha=0.6)
+    ax.legend(fontsize=9, framealpha=0.8)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_dp_curves(path: Path, dataset: str, noise_type: str, pipeline_key: str, curves) -> None:
+    proportions_pct = np.array(curves.proportions) * 100.0
+    dp_rnd_mean = np.array(curves.random_dp_mean)
+    dp_rnd_std = np.array(curves.random_dp_std)
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(proportions_pct, curves.datascope_dp,
+            color="#1f77b4", linestyle="-",  linewidth=1.8, label="DataScope")
+    ax.plot(proportions_pct, curves.cleanlab_dp,
+            color="#d62728", linestyle="--", linewidth=1.8, label="CleanLab")
+    ax.plot(proportions_pct, dp_rnd_mean,
+            color="#ff7f0e", linestyle="--", linewidth=1.4, label="Random")
+    ax.fill_between(proportions_pct, dp_rnd_mean - dp_rnd_std, dp_rnd_mean + dp_rnd_std,
+                    color="#ff7f0e", alpha=0.25, label="±1σ Random")
+    ax.plot(proportions_pct, curves.datascope_fair_dp,
+            color="#9467bd", linestyle="-", linewidth=2.0, label="DataScope-Fair")
+    ax.plot(proportions_pct, curves.fair_heuristic_dp,
+            color="#8c564b", linestyle="-.", linewidth=1.8, label="Fair heuristic")
+    if curves.datascope_removal_dp is not None:
+        ax.plot(proportions_pct, curves.datascope_removal_dp,
+                color="#2ca02c", linestyle="-", linewidth=1.4, label="DS removal")
+    ax.axhline(curves.baseline_dp, color="gray", linestyle=":", linewidth=1.0,
+               label=f"Baseline DP={curves.baseline_dp:.3f}")
+    ax.set_xlabel("% of training set cleaned", fontsize=10)
+    ax.set_ylabel("Demographic parity gap (lower = fairer)", fontsize=10)
+    ax.set_title(f"{dataset} | {noise_type} | {pipeline_key} — demographic parity", fontsize=9)
     ax.grid(True, linestyle=":", linewidth=0.6, alpha=0.6)
     ax.legend(fontsize=9, framealpha=0.8)
     fig.tight_layout()
@@ -338,6 +381,84 @@ def _plot_grid(
     plt.close(fig)
 
 
+def _plot_dp_grid(
+    path: Path,
+    dataset: str,
+    noise_level: float,
+    noise_types: List[str],
+    pipelines: List[str],
+    curves_grid: Dict,  # {pipeline_key: {noise_type: curves}}
+    proportions: np.ndarray,
+) -> None:
+    x = proportions * 100.0
+    n_rows, n_cols = len(pipelines), len(noise_types)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4.2 * n_cols, 3.6 * n_rows), squeeze=False)
+
+    for row, pipeline_key in enumerate(pipelines):
+        for col, noise_type in enumerate(noise_types):
+            ax = axes[row][col]
+            curves = curves_grid[pipeline_key][noise_type]
+            dp_rnd_mean = np.array(curves.random_dp_mean)
+            dp_rnd_std = np.array(curves.random_dp_std)
+
+            ax.plot(x, curves.datascope_dp, color="#1f77b4", linestyle="-",  linewidth=1.8, label="DataScope")
+            ax.plot(x, curves.cleanlab_dp,  color="#d62728", linestyle="--", linewidth=1.8, label="CleanLab")
+            ax.plot(x, dp_rnd_mean,         color="#ff7f0e", linestyle="--", linewidth=1.4, label="Random")
+            ax.fill_between(x, dp_rnd_mean - dp_rnd_std, dp_rnd_mean + dp_rnd_std, color="#ff7f0e", alpha=0.25)
+            ax.plot(x, curves.datascope_fair_dp, color="#9467bd", linestyle="-", linewidth=2.0, label="DataScope-Fair")
+            ax.plot(x, curves.fair_heuristic_dp, color="#8c564b", linestyle="-.", linewidth=1.8, label="Fair heuristic")
+            if curves.datascope_removal_dp is not None:
+                ax.plot(x, curves.datascope_removal_dp, color="#2ca02c", linestyle="-", linewidth=1.4, label="DS removal")
+            ax.axhline(curves.baseline_dp, color="gray", linestyle=":", linewidth=1.0, label="Baseline")
+
+            all_y = [*curves.datascope_dp, *curves.cleanlab_dp, *dp_rnd_mean,
+                     *curves.datascope_fair_dp, *curves.fair_heuristic_dp, curves.baseline_dp]
+            if curves.datascope_removal_dp is not None:
+                all_y.extend(curves.datascope_removal_dp)
+            y_min, y_max = min(all_y), max(all_y)
+            pad = max(0.005, (y_max - y_min) * 0.15)
+            ax.set_ylim(y_min - pad, y_max + pad)
+
+            ax.grid(True, linestyle=":", linewidth=0.6, alpha=0.6)
+            ax.tick_params(labelsize=7)
+            ax.text(0.97, 0.97, f"Noise: {noise_type}", transform=ax.transAxes,
+                    fontsize=6.5, ha="right", va="top",
+                    bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.7))
+
+            final_labels = [
+                f"DataScope: {curves.datascope_dp[-1]:.3f}",
+                f"CleanLab: {curves.cleanlab_dp[-1]:.3f}",
+                f"Random: {dp_rnd_mean[-1]:.3f}",
+                f"DataScope-Fair: {curves.datascope_fair_dp[-1]:.3f}",
+                f"Fair heuristic: {curves.fair_heuristic_dp[-1]:.3f}",
+                f"Baseline: {curves.baseline_dp:.3f}",
+            ]
+            if curves.datascope_removal_dp is not None:
+                final_labels.append(f"DS removal: {curves.datascope_removal_dp[-1]:.3f}")
+            n_legend = len(final_labels)
+            ax.legend(ax.get_lines()[:n_legend], final_labels,
+                      fontsize=5.5, loc="upper left", framealpha=0.8,
+                      handlelength=1.4, handletextpad=0.4)
+
+            if row == n_rows - 1:
+                ax.set_xlabel("% of training set cleaned", fontsize=8)
+            if col == 0:
+                ax.set_ylabel(f"{pipeline_key}\nDP gap", fontsize=8)
+            if row == 0:
+                ax.set_title(noise_type, fontsize=9, fontweight="bold")
+
+    noise_pct = int(noise_level * 100)
+    fig.suptitle(
+        f"Demographic Parity — {dataset.upper()} (noise_level={noise_pct}%)\n"
+        "Blue=DataScope, Red dashed=CleanLab, Orange dashed=Random (±1σ shaded), "
+        "Purple=DataScope-Fair, Brown dash-dot=Fair heuristic",
+        fontsize=10, y=1.01,
+    )
+    fig.tight_layout()
+    fig.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _markdown_table(rows: List[Dict], columns: List[str]) -> str:
     header = "| " + " | ".join(columns) + " |"
     divider = "| " + " | ".join(["---"] * len(columns)) + " |"
@@ -379,6 +500,8 @@ def main() -> int:
                     curves = _curves_from_cache(cache_dir)
                     figure_path = figures_dir / f"{slug}.png"
                     _plot_curves(figure_path, dataset, noise_type, pipeline_key, curves)
+                    dp_figure_path = figures_dir / f"{slug}__dp.png"
+                    _plot_dp_curves(dp_figure_path, dataset, noise_type, pipeline_key, curves)
                     dataset_curves.setdefault(pipeline_key, {})[noise_type] = curves
                     continue
 
@@ -398,6 +521,8 @@ def main() -> int:
                 figure_path = figures_dir / f"{slug}.png"
                 cache_dir.mkdir(parents=True, exist_ok=True)
                 _plot_curves(figure_path, dataset, noise_type, pipeline_key, artifacts.curves)
+                dp_figure_path = figures_dir / f"{slug}__dp.png"
+                _plot_dp_curves(dp_figure_path, dataset, noise_type, pipeline_key, artifacts.curves)
                 dataset_curves.setdefault(pipeline_key, {})[noise_type] = artifacts.curves
                 _save_train_records(cache_dir / "train_records.jsonl", train_rows)
 
@@ -457,6 +582,12 @@ def main() -> int:
                         "random_final": round(float(artifacts.curves.random_mean[final_idx]), 4),
                         "figure": f"figures/{slug}.png",
                         "cache": f"caches/{slug}/summary.json",
+                        "baseline_dp": round(float(artifacts.curves.baseline_dp), 4),
+                        "datascope_dp_final": round(float(artifacts.curves.datascope_dp[final_idx]), 4),
+                        "datascope_fair_final": round(float(artifacts.curves.datascope_fair[final_idx]), 4),
+                        "datascope_fair_dp_final": round(float(artifacts.curves.datascope_fair_dp[final_idx]), 4),
+                        "fair_heuristic_dp_final": round(float(artifacts.curves.fair_heuristic_dp[final_idx]), 4),
+                        "dp_figure": f"figures/{slug}__dp.png",
                     }
                 )
 
@@ -472,6 +603,13 @@ def main() -> int:
                         f"- Final Random mean accuracy: `{artifacts.curves.random_mean[-1]:.4f}`",
                         f"- True noisy training rows: `{len(artifacts.bundle.noisy_positions)}`",
                         f"- Cache files: `caches/{slug}/summary.json`, `caches/{slug}/train_records.jsonl`",
+                        "",
+                        f"![{slug} dp](figures/{slug}__dp.png)",
+                        "",
+                        f"- Baseline DP gap: `{artifacts.curves.baseline_dp:.4f}`",
+                        f"- Final DataScope-Fair DP gap: `{artifacts.curves.datascope_fair_dp[-1]:.4f}`",
+                        f"- Final Fair-heuristic DP gap: `{artifacts.curves.fair_heuristic_dp[-1]:.4f}`",
+                        f"- Final DataScope DP gap: `{artifacts.curves.datascope_dp[-1]:.4f}`",
                         "",
                         _markdown_table(
                             [
@@ -498,6 +636,11 @@ def main() -> int:
 
         _plot_grid(
             figures_dir / f"{dataset}__all_noise_types.png",
+            dataset, args.noise_level, args.noise_types, args.pipelines,
+            dataset_curves, proportions,
+        )
+        _plot_dp_grid(
+            figures_dir / f"{dataset}__all_noise_types_dp.png",
             dataset, args.noise_level, args.noise_types, args.pipelines,
             dataset_curves, proportions,
         )
