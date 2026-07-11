@@ -232,8 +232,6 @@ def _curves_from_cache(cache_dir: Path) -> MethodCurves:
         baseline=c["baseline"],
         proportions=np.array(c["proportions"]),
         datascope_removal=c.get("datascope_removal"),
-        kairos=c.get("kairos"),
-        hybrid_auto=c.get("hybrid_auto"),
     )
 
 
@@ -252,15 +250,9 @@ def _plot_curves(path: Path, dataset: str, noise_type: str, pipeline_key: str, c
     ax.fill_between(proportions_pct, rnd_mean - rnd_std, rnd_mean + rnd_std,
                     color="#ff7f0e", alpha=0.25, label="±1σ Random")
     ax.axhline(curves.baseline, color="#ff7f0e", linestyle="--", linewidth=1.0, label="Baseline")
-    if curves.kairos is not None:
-        ax.plot(proportions_pct, curves.kairos,
-                color="#9467bd", linestyle="-", linewidth=1.8, label="Kairos")
     if curves.datascope_removal is not None:
         ax.plot(proportions_pct, curves.datascope_removal,
                 color="#2ca02c", linestyle="-", linewidth=1.4, label="DS removal")
-    if curves.hybrid_auto is not None:
-        ax.plot(proportions_pct, curves.hybrid_auto,
-                color="#000000", linestyle="-", linewidth=2.0, label="Auto-Hybrid")
     ax.set_xlabel("% of training set cleaned", fontsize=10)
     ax.set_ylabel("Accuracy", fontsize=10)
     ax.set_title(
@@ -300,19 +292,11 @@ def _plot_grid(
             ax.plot(x, rnd_mean,         color="#ff7f0e", linestyle="--", linewidth=1.4, label="Random")
             ax.fill_between(x, rnd_mean - rnd_std, rnd_mean + rnd_std, color="#ff7f0e", alpha=0.25)
             ax.axhline(curves.baseline,  color="#ff7f0e", linestyle="--", linewidth=1.0, label="Baseline")
-            if curves.kairos is not None:
-                ax.plot(x, curves.kairos, color="#9467bd", linestyle="-", linewidth=1.8, label="Kairos")
             if curves.datascope_removal is not None:
                 ax.plot(x, curves.datascope_removal, color="#2ca02c", linestyle="-", linewidth=1.4, label="DS removal")
-            if curves.hybrid_auto is not None:
-                ax.plot(x, curves.hybrid_auto, color="#000000", linestyle="-", linewidth=2.0, label="Auto-Hybrid")
             all_y = [*curves.datascope, *curves.cleanlab, *rnd_mean, curves.baseline]
-            if curves.kairos is not None:
-                all_y.extend(curves.kairos)
             if curves.datascope_removal is not None:
                 all_y.extend(curves.datascope_removal)
-            if curves.hybrid_auto is not None:
-                all_y.extend(curves.hybrid_auto)
             y_min, y_max = min(all_y), max(all_y)
             pad = max(0.005, (y_max - y_min) * 0.15)
             ax.set_ylim(max(0.0, y_min - pad), min(1.0, y_max + pad))
@@ -329,12 +313,8 @@ def _plot_grid(
                 f"Random: {rnd_mean[-1]:.3f}",
                 f"Baseline: {curves.baseline:.3f}",
             ]
-            if curves.kairos is not None:
-                final_labels.append(f"Kairos: {curves.kairos[-1]:.3f}")
             if curves.datascope_removal is not None:
                 final_labels.append(f"DS removal: {curves.datascope_removal[-1]:.3f}")
-            if curves.hybrid_auto is not None:
-                final_labels.append(f"Auto-Hybrid: {curves.hybrid_auto[-1]:.3f}")
             n_legend = len(final_labels)
             ax.legend(ax.get_lines()[:n_legend], final_labels,
                       fontsize=5.5, loc="upper left", framealpha=0.8,
@@ -350,7 +330,7 @@ def _plot_grid(
     noise_pct = int(noise_level * 100)
     fig.suptitle(
         f"All Noise Types — {dataset.upper()} (noise_level={noise_pct}%)\n"
-        "Blue=DataScope, Red dashed=CleanLab, Orange dashed=Random (\u00b11\u03c3 shaded), Purple=Kairos",
+        "Blue=DataScope, Red dashed=CleanLab, Orange dashed=Random (\u00b11\u03c3 shaded)",
         fontsize=10, y=1.01,
     )
     fig.tight_layout()

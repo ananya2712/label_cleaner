@@ -33,34 +33,31 @@ import matplotlib.pyplot as plt
 # ── Configuration ────────────────────────────────────────────────────────────
 
 RUNS = [
-    {"dataset": "adult",   "noise_level": 0.10, "run_dir": REPO_ROOT / "artifacts" / "run_v4" / "adult_10pct"},
-    {"dataset": "german",  "noise_level": 0.20, "run_dir": REPO_ROOT / "artifacts" / "run_v4" / "german_20pct"},
-    {"dataset": "titanic", "noise_level": 0.20, "run_dir": REPO_ROOT / "artifacts" / "run_v4" / "titanic_20pct"},
+    {"dataset": "adult",   "noise_level": 0.20, "run_dir": REPO_ROOT / "artifacts" / "run_v5" / "adult_20pct"},
+    {"dataset": "german",  "noise_level": 0.20, "run_dir": REPO_ROOT / "artifacts" / "run_v5" / "german_20pct"},
+    {"dataset": "titanic", "noise_level": 0.20, "run_dir": REPO_ROOT / "artifacts" / "run_v5" / "titanic_20pct"},
 ]
 
 NOISE_TYPES = ["outlier", "rnd_label", "nnar", "mnar"]
 PIPELINES   = ["p1a", "p2b"]
-METHODS     = ["datascope", "cleanlab", "kairos", "random_mean"]
+METHODS     = ["datascope", "cleanlab", "random_mean"]
 METHOD_LABELS = {
     "datascope":   "DataScope",
     "cleanlab":    "CleanLab",
-    "kairos":      "Kairos",
     "random_mean": "Random",
 }
 COLORS = {
     "datascope":   "#1f77b4",
     "cleanlab":    "#d62728",
-    "kairos":      "#9467bd",
     "random_mean": "#ff7f0e",
 }
 STYLES = {
     "datascope":   "-",
     "cleanlab":    "--",
-    "kairos":      "-",
     "random_mean": "--",
 }
 
-OUTPUT_DIR = REPO_ROOT / "artifacts" / "run_v4" / "combined_report"
+OUTPUT_DIR = REPO_ROOT / "artifacts" / "run_v5" / "combined_report"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -174,15 +171,12 @@ def _plot_dataset_grid(dataset: str, noise_level: float, run_dir: Path,
             ax.plot(props, rnd_mean,        color=COLORS["random_mean"], linestyle=STYLES["random_mean"], linewidth=1.4, label="Random")
             ax.fill_between(props, rnd_mean - rnd_std, rnd_mean + rnd_std, color=COLORS["random_mean"], alpha=0.25)
             ax.axhline(c["baseline"],       color=COLORS["random_mean"], linestyle="--", linewidth=1.0, label="Baseline")
-            if c.get("kairos"):
-                ax.plot(props, c["kairos"], color=COLORS["kairos"],      linestyle=STYLES["kairos"],      linewidth=1.8, label="Kairos")
             if c.get("datascope_removal"):
                 ax.plot(props, c["datascope_removal"], color="#2ca02c",  linestyle="-",                   linewidth=1.4, label="DS removal")
 
             all_y = [*c["datascope"], *c["cleanlab"], *rnd_mean, c["baseline"]]
-            for k in ("kairos", "datascope_removal"):
-                if c.get(k):
-                    all_y.extend(c[k])
+            if c.get("datascope_removal"):
+                all_y.extend(c["datascope_removal"])
             y_min, y_max = min(all_y), max(all_y)
             pad = max(0.005, (y_max - y_min) * 0.15)
             ax.set_ylim(max(0.0, y_min - pad), min(1.0, y_max + pad))
@@ -199,8 +193,6 @@ def _plot_dataset_grid(dataset: str, noise_level: float, run_dir: Path,
                 f"Random: {rnd_mean[-1]:.3f}",
                 f"Baseline: {c['baseline']:.3f}",
             ]
-            if c.get("kairos"):
-                final_labels.append(f"Kairos: {c['kairos'][-1]:.3f}")
             if c.get("datascope_removal"):
                 final_labels.append(f"DS removal: {c['datascope_removal'][-1]:.3f}")
             n_legend = len(final_labels)
@@ -218,7 +210,7 @@ def _plot_dataset_grid(dataset: str, noise_level: float, run_dir: Path,
     noise_pct = int(noise_level * 100)
     fig.suptitle(
         f"All Noise Types — {dataset.upper()} (noise_level={noise_pct}%)\n"
-        "Blue=DataScope, Red dashed=CleanLab, Orange dashed=Random (±1σ shaded), Purple=Kairos",
+        "Blue=DataScope, Red dashed=CleanLab, Orange dashed=Random (±1σ shaded)",
         fontsize=10, y=1.01,
     )
     fig.tight_layout()
@@ -265,7 +257,7 @@ def main() -> int:
         "",
         "| Dataset | Noise Level | Train rows (approx) | Protected attribute |",
         "| --- | --- | --- | --- |",
-        "| Adult   | 10% | ~26 000 | Sex (Female) |",
+        "| Adult   | 20% | ~26 000 | Sex (Female) |",
         "| German  | 20% | ~800    | personal_status (female codes) |",
         "| Titanic | 20% | ~712    | Sex (female) |",
         "",
@@ -274,7 +266,6 @@ def main() -> int:
         "**Methods compared:**",
         "- **DataScope** — Shapley-importance ranking (NEIGHBOR method), correction action",
         "- **CleanLab** — self_confidence ranking, correction action",
-        "- **Kairos** — RBF kernel + logistic residual data valuation, correction action",
         "- **Random** — random ordering baseline (±1σ over 3 seeds)",
         "- **DS removal** *(outlier only)* — DataScope ranking, remove instead of cap",
         "",
@@ -304,7 +295,6 @@ def main() -> int:
                     "baseline":  f"{c['baseline']:.4f}",
                     "DataScope": f"{_final(c, 'datascope'):.4f}"  if _final(c, 'datascope')  else "—",
                     "CleanLab":  f"{_final(c, 'cleanlab'):.4f}"   if _final(c, 'cleanlab')   else "—",
-                    "Kairos":    f"{_final(c, 'kairos'):.4f}"     if _final(c, 'kairos')     else "—",
                     "Random":    f"{_final(c, 'random_mean'):.4f}" if _final(c, 'random_mean') else "—",
                     "best_acc":  _best_method(c),
                 }
@@ -315,7 +305,7 @@ def main() -> int:
         "",
         _md_table(summary_rows,
                   ["dataset", "noise", "pipeline", "baseline",
-                   "DataScope", "CleanLab", "Kairos", "Random", "best_acc"]),
+                   "DataScope", "CleanLab", "Random", "best_acc"]),
         "",
         "---",
         "",
@@ -347,7 +337,6 @@ def main() -> int:
                     "baseline":  f"{c['baseline']:.4f}",
                     "DataScope": f"{_final(c, 'datascope'):.4f}"   if _final(c, 'datascope')   else "—",
                     "CleanLab":  f"{_final(c, 'cleanlab'):.4f}"    if _final(c, 'cleanlab')    else "—",
-                    "Kairos":    f"{_final(c, 'kairos'):.4f}"      if _final(c, 'kairos')      else "—",
                     "Random":    f"{_final(c, 'random_mean'):.4f}" if _final(c, 'random_mean') else "—",
                     "best":      _best_method(c),
                 })
@@ -357,7 +346,7 @@ def main() -> int:
                     "",
                     _md_table(acc_rows,
                               ["pipeline", "baseline", "DataScope", "CleanLab",
-                               "Kairos", "Random", "best"]),
+                               "Random", "best"]),
                     "",
                 ]
 
