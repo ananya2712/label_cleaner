@@ -83,10 +83,36 @@ def test_dp_utility_montecarlo_runs():
     assert np.isfinite(scores).all()
 
 
+def test_clean_datascope_fair_reduces_gap():
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import StandardScaler
+    from label_cleaner.methods.cleaning import clean_datascope_fair
+    from label_cleaner.methods.cleaning import action_restore_labels
+
+    Xtr, ytr_noisy, Xte, yte, flipped, prot_te = _make_biased_data(seed=2)
+    ytr_clean = ytr_noisy.copy()
+    ytr_clean[flipped] = 1  # ground truth: flips were 1 -> 0
+    factory = lambda: Pipeline([("sc", StandardScaler()),
+                                ("m", LogisticRegression(max_iter=1000))])
+    accs, dps, ranked = clean_datascope_fair(
+        factory, Xtr, ytr_noisy, Xte, yte,
+        noisy_positions=flipped,
+        action_fn=action_restore_labels(ytr_clean),
+        proportions=np.array([0.0, 1.0]),
+        protected_test=prot_te,
+    )
+    assert len(accs) == len(dps) == 2
+    assert set(ranked.tolist()) == set(flipped.tolist())
+    # Restoring all planted bias must not worsen the parity gap.
+    assert dps[1] <= dps[0] + 0.02, dps
+
+
 if __name__ == "__main__":
     test_gap_basic()
     test_gap_zero_when_equal()
     test_gap_degenerate_group_returns_zero()
     test_dp_utility_neighbor_sign()
     test_dp_utility_montecarlo_runs()
+    test_clean_datascope_fair_reduces_gap()
     print("test_fairness: OK")

@@ -27,7 +27,7 @@ from datascope.importance.shapley import ImportanceMethod, ShapleyImportance
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import cross_val_predict
 
-from .fairness import demographic_parity_gap
+from .fairness import SklearnModelDemographicParityDifference, demographic_parity_gap
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +128,62 @@ def clean_datascope(
 
     return accs, dps, ranked_noisy
 
+
+
+# ---------------------------------------------------------------------------
+# DataScope-Fair (demographic parity Shapley)
+# ---------------------------------------------------------------------------
+
+def clean_datascope_fair(
+    pipeline_factory: Callable,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    noisy_positions: np.ndarray,
+    action_fn: Callable,
+    proportions: np.ndarray,
+    protected_test: np.ndarray,
+) -> Tuple[List[float], List[float], np.ndarray]:
+    """
+    Fairness-aware DataScope cleaning (λ=1, pure demographic parity).
+
+    Ranks noisy samples by their Shapley contribution to the demographic
+    parity gap (via SklearnModelDemographicParityDifference, which returns
+    the negative gap so higher importance = fairer). Ascending order = most
+    fairness-harmful first — the same convention as accuracy DataScope.
+    Uses ImportanceMethod.NEIGHBOR (the utility implements elementwise_score).
+
+    Returns
+    -------
+    accs   : accuracy at each proportion
+    dps    : demographic parity gap at each proportion
+    ranked : noisy_positions sorted most fairness-harmful first
+    """
+    pipeline = pipeline_factory()
+    pipeline.fit(X_train, y_train)
+
+    utility = SklearnModelDemographicParityDifference(
+        pipeline[-1], groupings=np.asarray(protected_test, dtype=int)
+    )
+    imp = ShapleyImportance(
+        method=ImportanceMethod.NEIGHBOR,
+        pipeline=pipeline[:-1],
+        utility=utility,
+    )
+    importances  = imp.fit(X_train, y_train).score(X_test, y_test)
+    sorted_order = np.argsort(importances[noisy_positions])  # ascending: most gap-inflating first
+    ranked_noisy = noisy_positions[sorted_order]
+
+    accs, dps = [], []
+    for p in proportions:
+        n_clean   = int(p * len(ranked_noisy))
+        X_c, y_c  = action_fn(X_train, y_train, ranked_noisy[:n_clean])
+        acc, dp = _safe_eval(pipeline_factory, X_c, y_c, X_test, y_test, protected_test)
+        accs.append(acc)
+        dps.append(dp)
+
+    return accs, dps, ranked_noisy
 
 
 # ---------------------------------------------------------------------------

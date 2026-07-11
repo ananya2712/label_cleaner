@@ -33,6 +33,8 @@ class MethodCurves:
     random_dp_mean: Optional[List[float]] = None
     random_dp_std: Optional[List[float]] = None
     datascope_removal_dp: Optional[List[float]] = None
+    datascope_fair: Optional[List[float]] = None
+    datascope_fair_dp: Optional[List[float]] = None
 
 
 @dataclass
@@ -58,3 +60,4 @@ class ExperimentArtifacts:
     datascope_ranked: np.ndarray
     cleanlab_ranked: np.ndarray
     random_rankings: List[np.ndarray]
+    datascope_fair_ranked: np.ndarray = None
