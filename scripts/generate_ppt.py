@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate a PowerPoint presentation from run_v2 results.
+Generate a PowerPoint presentation from run_v5 results.
 
 Uses /usr/bin/python3 (Python 3.9) which has python-pptx installed.
 Run with:
@@ -19,18 +19,18 @@ from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt, Emu
 
 REPO_ROOT  = Path(__file__).resolve().parents[1]
-RUN_V2     = REPO_ROOT / "artifacts" / "run_v2"
-COMBINED   = RUN_V2 / "combined_report"
-OUT_PATH   = REPO_ROOT / "artifacts" / "run_v2" / "results.pptx"
+RUN_V5     = REPO_ROOT / "artifacts" / "run_v5"
+COMBINED   = RUN_V5 / "combined_report"
+OUT_PATH   = RUN_V5 / "results.pptx"
 
 RUNS = [
-    {"dataset": "adult",   "noise_pct": "10%", "dir": RUN_V2 / "adult_10pct"},
-    {"dataset": "german",  "noise_pct": "20%", "dir": RUN_V2 / "german_20pct"},
-    {"dataset": "titanic", "noise_pct": "20%", "dir": RUN_V2 / "titanic_20pct"},
+    {"dataset": "adult",   "noise_pct": "20%", "dir": RUN_V5 / "adult_20pct"},
+    {"dataset": "german",  "noise_pct": "20%", "dir": RUN_V5 / "german_20pct"},
+    {"dataset": "titanic", "noise_pct": "20%", "dir": RUN_V5 / "titanic_20pct"},
 ]
 NOISE_TYPES = ["outlier", "rnd_label", "nnar", "mnar"]
 PIPELINES   = ["p1a", "p2b"]
-METHODS     = ["datascope", "cleanlab", "kairos"]
+METHODS     = ["datascope", "cleanlab"]
 
 # ── Colours ──────────────────────────────────────────────────────────────────
 NAVY   = RGBColor(0x1a, 0x2e, 0x4a)
@@ -116,7 +116,7 @@ def _final(curves: dict, method: str):
 
 
 def _best(curves: dict) -> tuple[str, float]:
-    labels = {"datascope": "DataScope", "cleanlab": "CleanLab", "kairos": "Kairos"}
+    labels = {"datascope": "DataScope", "cleanlab": "CleanLab"}
     scores = {m: _final(curves, m) for m in METHODS if _final(curves, m) is not None}
     if not scores:
         return "—", 0.0
@@ -137,11 +137,11 @@ def slide_title(prs: Presentation):
     _textbox(sl, "Benchmarking Data-Cleaning Methods for Noisy Training Labels",
              Inches(0.5), Inches(3.1), Inches(11), Inches(0.6),
              size=20, color=RGBColor(0xbb, 0xcc, 0xdd))
-    _textbox(sl, "Adult (10% noise)  ·  German Credit (20%)  ·  Titanic (20%)\n"
-                 "7 cleaning methods  ·  4 noise types  ·  2 pipelines",
+    _textbox(sl, "Adult (20% noise)  ·  German Credit (20%)  ·  Titanic (20%)\n"
+                 "DataScope · CleanLab · Random baseline  ·  4 noise types  ·  2 pipelines",
              Inches(0.5), Inches(3.85), Inches(11), Inches(0.7),
              size=14, color=RGBColor(0x88, 0xaa, 0xcc))
-    _textbox(sl, "run_v2", Inches(11.8), Inches(7.1), Inches(1.3), Inches(0.3),
+    _textbox(sl, "run_v5", Inches(11.8), Inches(7.1), Inches(1.3), Inches(0.3),
              size=10, color=RGBColor(0x55, 0x77, 0x99), align=PP_ALIGN.RIGHT)
 
 
@@ -154,7 +154,7 @@ def slide_setup(prs: Presentation):
     _textbox(sl, "Datasets", Inches(0.35), Inches(1.25), Inches(4), Inches(0.35),
              size=14, bold=True, color=NAVY)
     rows = [
-        ("Adult",   "48 842 rows · 14 features · Sex",    "Income >50K",  "10%"),
+        ("Adult",   "48 842 rows · 14 features · Sex",    "Income >50K",  "20%"),
         ("German",  "1 000 rows · 20 features · Sex",     "Credit risk",  "20%"),
         ("Titanic", "891 rows  · 7 features  · Sex",      "Survival",     "20%"),
     ]
@@ -173,7 +173,7 @@ def slide_setup(prs: Presentation):
         ("Outlier",      "Feature values replaced with extreme value (100)\nCleaning: cap at 2σ"),
         ("Random Label", "Labels flipped uniformly at random\nCleaning: restore ground-truth"),
         ("NNAR",         "Labels flipped for protected subgroup only\nCleaning: restore ground-truth"),
-        ("MNAR",         "Features set to NaN for protected subgroup\nCleaning: flip label (proxy)"),
+        ("MNAR",         "Features set to NaN for protected subgroup\nCleaning: remove detected rows"),
     ]
     for i, (name, desc) in enumerate(noise_rows):
         y = Inches(1.65 + i * 0.9)
@@ -198,9 +198,6 @@ def slide_setup(prs: Presentation):
         _textbox(sl, desc, Inches(9.3), y + Inches(0.33), Inches(3.5), Inches(0.38),
                  size=9.5, color=GRAY)
 
-    _textbox(sl, "Fairness metric: Equalized Odds difference = |ΔTPR| + |ΔFPR| across protected/unprotected groups (run_v3 only)",
-             Inches(0.35), Inches(6.95), Inches(12.5), Inches(0.4),
-             size=9, color=GRAY, align=PP_ALIGN.CENTER)
 
 
 def slide_methods(prs: Presentation):
@@ -210,28 +207,17 @@ def slide_methods(prs: Presentation):
 
     methods = [
         ("DataScope",      "#1f77b4",
-         "Ranks noisy samples by Shapley importance — how much each sample "
-         "hurts test accuracy. Uses NEIGHBOR approximation (KNN-based). "
-         "Most harmful first."),
+         "Ranks noisy samples by ascending Shapley importance — the samples that "
+         "hurt test accuracy most are cleaned first. Uses NEIGHBOR approximation "
+         "(KNN-based)."),
         ("CleanLab",       "#d62728",
          "OOF self_confidence scoring via cross_val_predict. "
          "Ranks ALL training samples; most suspicious (lowest confidence) first. "
          "Fully unsupervised — does not use ground-truth noisy positions."),
-        ("CL-Adaptive",    "#8c1717",
-         "CleanLab ranking + Otsu adaptive threshold on self_confidence. "
-         "High confidence flagged → correct; low confidence → remove. "
-         "BC guard prevents spurious splits on unimodal distributions."),
-        ("Kairos",         "#9467bd",
-         "RBF kernel feature similarity + logistic residual score. "
-         "Detects samples anomalous relative to test distribution. "
-         "Collapses on MNAR (feature corruption distorts kernel)."),
-        ("DS-Hybrid",      "#17becf",
-         "Min-max normalised blend of Shapley + (1 − self_confidence) at α=0.5. "
-         "Combines DataScope's global ranking with CleanLab's local uncertainty."),
-        ("Auto-Hybrid",    "#000000",
-         "Detects noise type from OOF probabilities (feature z-score + "
-         "spatial clustering), then routes to the best method. "
-         "Avoids Kairos MNAR collapse by routing to CleanLab."),
+        ("DS Removal",     "#2ca02c",
+         "DataScope ranking, but detected rows are removed from training instead "
+         "of capped. Outlier experiments only — tests whether dropping beats "
+         "repairing."),
         ("Random",         "#ff7f0e",
          "Shuffles noisy positions uniformly at random. Mean ± 1σ over 3 seeds. "
          "Baseline that isolates the ordering benefit of learned methods."),
@@ -306,7 +292,7 @@ def slide_method_datascope(prs: Presentation):
     steps = [
         ("1", "Fit the full pipeline on the noisy training set"),
         ("2", "Compute Shapley importances via ShapleyImportance(NEIGHBOR).score(X_test)"),
-        ("3", "Sort noisy positions by descending importance (most harmful first)"),
+        ("3", "Sort noisy positions by ascending importance (most harmful first)"),
         ("4", "Incrementally apply action_fn to top-k% · measure accuracy at each step"),
     ]
     for i, (n, t) in enumerate(steps):
@@ -336,179 +322,36 @@ def slide_method_datascope(prs: Presentation):
 def slide_method_cleanlab(prs: Presentation):
     sl = _blank(prs)
     _rect(sl, 0, 0, W, H, 0xf4, 0xf6, 0xf9)
-    _header_bar(sl, "Methods: CleanLab & CL-Adaptive",
-                "Self-confidence ranking + adaptive action routing")
+    _header_bar(sl, "Method: CleanLab", "Self-confidence ranking")
 
-    # CleanLab left column
-    _textbox(sl, "CleanLab", Inches(0.35), Inches(1.2), Inches(5.8), Inches(0.35),
-             size=14, bold=True, color=RGBColor(0xd6, 0x27, 0x28))
+    _textbox(sl, "How it works", Inches(0.35), Inches(1.2), Inches(6.5), Inches(0.35),
+             size=13, bold=True, color=NAVY)
     _textbox(sl,
              "Out-of-fold (OOF) predicted probabilities via 5-fold cross-validation. "
              "Self-confidence = P(current label correct | x). Lower = more suspicious. "
              "Fully unsupervised — does not need ground-truth noisy positions.",
-             Inches(0.35), Inches(1.58), Inches(5.8), Inches(1.0), size=10.5, color=GRAY)
+             Inches(0.35), Inches(1.58), Inches(6.5), Inches(1.2), size=11, color=GRAY)
+
+    _textbox(sl, "Algorithm", Inches(0.35), Inches(3.0), Inches(6.5), Inches(0.35),
+             size=13, bold=True, color=NAVY)
     cl_steps = [
         ("1", "cross_val_predict(cv=5, method='predict_proba') on full training set"),
         ("2", "find_label_issues(ranked_by='self_confidence') → ranked suspicious list"),
         ("3", "Apply action_fn to top-k% most suspicious samples"),
+        ("4", "Measure accuracy on the clean held-out test set at each proportion"),
     ]
     for i, (n, t) in enumerate(cl_steps):
-        _step_box(sl, n, t, Inches(0.35), Inches(2.65 + i * 0.68),
+        _step_box(sl, n, t, Inches(0.35), Inches(3.4 + i * 0.68),
                   accent_rgb=(0xd6, 0x27, 0x28))
 
-    # CL-Adaptive right column
-    _textbox(sl, "CL-Adaptive (Otsu + BC guard)", Inches(6.9), Inches(1.2),
-             Inches(6.0), Inches(0.35), size=14, bold=True, color=RGBColor(0x8c, 0x17, 0x17))
-    _textbox(sl,
-             "Extends CleanLab by routing each flagged sample to one of two actions. "
-             "The split threshold is found via Otsu's method on the self-confidence "
-             "scores of all flagged samples, gated by the bimodality coefficient.",
-             Inches(6.9), Inches(1.58), Inches(6.0), Inches(0.9), size=10.5, color=GRAY)
-
-    # Otsu formula
-    _rect(sl, Inches(6.9), Inches(2.55), Inches(5.8), Inches(0.7), 0xFF, 0xFF, 0xFF)
-    _textbox(sl, "Otsu objective:  σ²_between(t) = w₀(t)·w₁(t)·(μ₀(t)−μ₁(t))²",
-             Inches(7.05), Inches(2.62), Inches(5.5), Inches(0.3), size=10.5, color=NAVY)
-    _textbox(sl, "BC = (skewness² + 1) / Pearson_kurtosis  →  use Otsu only if BC > 5/9",
-             Inches(7.05), Inches(2.93), Inches(5.5), Inches(0.28), size=10, color=GRAY)
-
-    ada_steps = [
-        ("1", "Compute Otsu threshold on self_confidence of all CL-flagged samples"),
-        ("2", "conf < threshold  →  remove sample  (highly uncertain)"),
-        ("3", "conf ≥ threshold  →  correct via action_fn  (recoverable error)"),
-    ]
-    for i, (n, t) in enumerate(ada_steps):
-        _step_box(sl, n, t, Inches(6.9), Inches(3.35 + i * 0.68),
-                  accent_rgb=(0x8c, 0x17, 0x17))
-
-    # Shared pros/cons
     _pro_con(sl,
              ["Unsupervised — no ground-truth noisy positions needed",
-              "Adaptive routing differentiates recoverable vs irrecoverable noise",
-              "BC guard prevents spurious splits on unimodal distributions"],
+              "Strong on random label noise — self_confidence ranks flips reliably",
+              "Cheap: one 5-fold CV pass, no importance computation"],
              ["Degrades at high noise rates — OOF probs become noisy themselves",
               "Less effective on feature noise (label correct, feature corrupted)",
-              "Bimodal threshold adds little on small datasets (Titanic ~700 rows)"],
-             Inches(0.35), Inches(5.3))
-
-
-def slide_method_kairos(prs: Presentation):
-    sl = _blank(prs)
-    _rect(sl, 0, 0, W, H, 0xf4, 0xf6, 0xf9)
-    _header_bar(sl, "Method: Kairos",
-                "RBF kernel data valuation — Lodino et al., NeurIPS 2025")
-
-    _textbox(sl,
-             "Scores each training sample using two complementary signals computed against "
-             "the test distribution. Low-value samples (anomalous or label-inconsistent) are cleaned first.",
-             Inches(0.35), Inches(1.2), Inches(12.5), Inches(0.55), size=11.5, color=GRAY)
-
-    # Two signal boxes
-    for i, (title, col, body) in enumerate([
-        ("Feature Score",  (0x94, 0x67, 0xbd),
-         "RBF kernel similarity of each training sample to the test distribution "
-         "minus its similarity to the training distribution.\n"
-         "K(xᵢ, val_ref).mean  −  K(xᵢ, trn_ref).mean\n"
-         "High = looks like test set = valuable.  Low = anomalous."),
-        ("Residual Score", (0x17, 0xbe, 0xcf),
-         "P(correct label | xᵢ) from a logistic regression trained on the test set. "
-         "Higher = label is consistent with test distribution = likely clean.\n"
-         "Provides a label-quality signal independent of the main pipeline."),
-    ]):
-        x = Inches(0.35 + i * 6.5)
-        _rect(sl, x, Inches(1.85), Inches(6.2), Inches(0.38), *col)
-        _textbox(sl, title, x + Inches(0.1), Inches(1.9), Inches(6.0), Inches(0.3),
-                 size=13, bold=True, color=WHITE)
-        _rect(sl, x, Inches(2.23), Inches(6.2), Inches(1.5), 0xFF, 0xFF, 0xFF)
-        _textbox(sl, body, x + Inches(0.1), Inches(2.28), Inches(6.0), Inches(1.38),
-                 size=10, color=NAVY)
-
-    # Blend formula
-    _rect(sl, Inches(0.35), Inches(3.85), Inches(12.5), Inches(0.55), 0xFF, 0xFF, 0xFF)
-    _textbox(sl, "Combined:   score_i  =  0.97 × feature_score_i  +  0.03 × residual_score_i     →  rank ascending (lowest = noisiest first)",
-             Inches(0.5), Inches(3.92), Inches(12.2), Inches(0.38), size=11.5, bold=True, color=NAVY)
-
-    # Memory note
-    _textbox(sl, "Scalability: full n×n RBF kernel for adult (~32k rows) would need ~5.4 GB RAM. "
-             "Reference sets are subsampled: val_ref ≤ 500 rows, train_ref ≤ 2 000 rows.",
-             Inches(0.35), Inches(4.52), Inches(12.5), Inches(0.45), size=10.5, color=GRAY)
-
-    _pro_con(sl,
-             ["Best overall on outlier noise — kernel score directly detects feature anomalies",
-              "Model-agnostic — scores computed independently of the main pipeline",
-              "adult p2b outlier: 0.8216 vs baseline 0.8101"],
-             ["Collapses on MNAR — protected-group NaN→imputed values shift kernel score to ~0",
-              "Requires a clean test set for kernel computation",
-              "Memory/compute cost requires subsampling on large datasets"],
-             Inches(0.35), Inches(5.1))
-
-
-def slide_method_hybrids(prs: Presentation):
-    sl = _blank(prs)
-    _rect(sl, 0, 0, W, H, 0xf4, 0xf6, 0xf9)
-    _header_bar(sl, "Methods: DS-Hybrid & Auto-Hybrid",
-                "Blended signals and noise-type routing")
-
-    # DS-Hybrid
-    _textbox(sl, "DS-Hybrid  (α = 0.5)", Inches(0.35), Inches(1.2), Inches(6.2), Inches(0.35),
-             size=14, bold=True, color=RGBColor(0x17, 0xbe, 0xcf))
-    _textbox(sl,
-             "Addresses DataScope's missing label-uncertainty signal and CleanLab's missing "
-             "global accuracy-impact signal by blending both over the known noisy positions.",
-             Inches(0.35), Inches(1.6), Inches(6.2), Inches(0.75), size=10.5, color=GRAY)
-    _rect(sl, Inches(0.35), Inches(2.42), Inches(6.2), Inches(0.65), 0xFF, 0xFF, 0xFF)
-    _textbox(sl, "hybrid_i  =  α · minmax(shapley_i)  +  (1−α) · minmax(1 − self_confidence_i)",
-             Inches(0.5), Inches(2.5), Inches(6.0), Inches(0.48), size=10.5, bold=True, color=NAVY)
-    hyb_steps = [
-        ("1", "Compute Shapley importances (same as DataScope)"),
-        ("2", "Run cross_val_predict to get OOF self_confidence scores"),
-        ("3", "Min-max normalise both signals to [0, 1]"),
-        ("4", "Blend at α=0.5, rank noisy positions by descending hybrid score"),
-    ]
-    for i, (n, t) in enumerate(hyb_steps):
-        _step_box(sl, n, t, Inches(0.35), Inches(3.18 + i * 0.63),
-                  w=Inches(6.2), h=Inches(0.57), accent_rgb=(0x17, 0xbe, 0xcf))
-
-    # Auto-Hybrid
-    _textbox(sl, "Auto-Hybrid  (noise-type router)", Inches(6.9), Inches(1.2),
-             Inches(6.0), Inches(0.35), size=14, bold=True, color=NAVY)
-    _textbox(sl,
-             "Detects the likely noise type from OOF predicted probabilities "
-             "and routes to the empirically best method for that type.",
-             Inches(6.9), Inches(1.6), Inches(6.0), Inches(0.6), size=10.5, color=GRAY)
-
-    # Detection logic table
-    routes = [
-        ("outlier",   "Feature anomaly ≥ 0.25, low clustering",  "→ Kairos",    (0x94, 0x67, 0xbd)),
-        ("mnar",      "Feature anomaly ≥ 0.25, high clustering",  "→ CleanLab",  (0xd6, 0x27, 0x28)),
-        ("nnar",      "Low feature anomaly, high clustering",      "→ DataScope", (0x1f, 0x77, 0xb4)),
-        ("rnd_label", "Low feature anomaly, low clustering",       "→ CleanLab",  (0xd6, 0x27, 0x28)),
-    ]
-    for i, (noise, rule, target, col) in enumerate(routes):
-        y = Inches(2.28 + i * 0.65)
-        _rect(sl, Inches(6.9),  y, Inches(1.2),  Inches(0.56), *col)
-        _textbox(sl, noise, Inches(6.95), y + Inches(0.12), Inches(1.1), Inches(0.32),
-                 size=10, bold=True, color=WHITE)
-        _rect(sl, Inches(8.1),  y, Inches(3.5),  Inches(0.56), 0xFF, 0xFF, 0xFF)
-        _textbox(sl, rule, Inches(8.18), y + Inches(0.12), Inches(3.35), Inches(0.32),
-                 size=9.5, color=GRAY)
-        _rect(sl, Inches(11.6), y, Inches(1.3),  Inches(0.56), *col)
-        _textbox(sl, target, Inches(11.65), y + Inches(0.12), Inches(1.2), Inches(0.32),
-                 size=9.5, bold=True, color=WHITE)
-
-    _textbox(sl, "Detection signals: feature anomaly = fraction of low-confidence samples with |z-score| > 3  ·  "
-             "clustering = 1 − within_flagged_variance / overall_variance",
-             Inches(6.9), Inches(4.93), Inches(6.0), Inches(0.5), size=9, color=GRAY)
-
-    # Shared pros/cons
-    _pro_con(sl,
-             ["Auto-Hybrid avoids Kairos MNAR collapse — routes to CleanLab instead",
-              "No noise-type knowledge required from user",
-              "Performs at or above the mean of individual methods in most configs"],
-             ["DS-Hybrid: requires ground-truth noisy positions (not fully unsupervised)",
-              "DS-Hybrid: no gain on small datasets — signals already correlated",
-              "Auto-Hybrid: heuristic thresholds may not generalise to all datasets"],
-             Inches(0.35), Inches(5.65))
+              "Ranks all samples — top-k includes false positives on clean data"],
+             Inches(7.1), Inches(1.2))
 
 
 def slide_heatmap(prs: Presentation):
@@ -532,7 +375,7 @@ def slide_dataset_grid(prs: Presentation, run: dict):
 
 
 def slide_findings(prs: Presentation):
-    # Collect best numbers from run_v2 caches
+    # Collect best numbers from run_v5 caches
     findings = []
     for run in RUNS:
         ds = run["dataset"]
@@ -581,62 +424,6 @@ def slide_findings(prs: Presentation):
             _textbox(sl, cell, x + Inches(0.05), y + Inches(0.1),
                      col_widths[j], row_h, size=10, bold=bold, color=color)
 
-    # Footer note
-    _textbox(sl, "Kairos excluded from MNAR configs (collapses due to protected-group feature corruption)",
-             Inches(0.3), Inches(7.05), Inches(12.5), Inches(0.35),
-             size=9, color=GRAY, align=PP_ALIGN.CENTER)
-
-
-def slide_kairos_note(prs: Presentation):
-    sl = _blank(prs)
-    _rect(sl, 0, 0, W, H, 0xf4, 0xf6, 0xf9)
-    _header_bar(sl, "Notable Finding — Kairos MNAR Collapse")
-
-    _textbox(sl,
-             "Kairos scores each training sample by its RBF kernel similarity to the "
-             "test distribution minus its similarity to the training distribution. "
-             "On MNAR noise, protected-group feature values are replaced with NaN — "
-             "then imputed with neighbour averages — which shifts the entire group's "
-             "kernel score toward zero. This produces near-random rankings and "
-             "drops accuracy from ~0.81 to ~0.18 on adult.",
-             Inches(0.5), Inches(1.3), Inches(8.0), Inches(2.5),
-             size=13, color=NAVY)
-
-    _textbox(sl, "Auto-Hybrid mitigation",
-             Inches(0.5), Inches(3.9), Inches(8.0), Inches(0.4),
-             size=14, bold=True, color=ACCENT)
-    _textbox(sl,
-             "Auto-Hybrid detects MNAR by checking whether the bottom-20% "
-             "confidence samples are both feature-anomalous (z-score > 3) AND "
-             "spatially clustered (low within-flagged variance). When both are "
-             "true it routes to CleanLab instead of Kairos, successfully avoiding "
-             "the collapse on all three datasets.",
-             Inches(0.5), Inches(4.35), Inches(8.0), Inches(1.8),
-             size=13, color=NAVY)
-
-    # Accuracy table: MNAR adult p1a
-    c = _load_curves(RUNS[0]["dir"], "adult", "mnar", "p1a")
-    if c:
-        _textbox(sl, "adult | mnar | p1a  (final accuracy @ 100% cleaning)",
-                 Inches(9.0), Inches(1.3), Inches(4.0), Inches(0.4),
-                 size=11, bold=True, color=NAVY)
-        entries = [
-            ("Baseline",     c.get("baseline")),
-            ("DataScope",    _final(c, "datascope")),
-            ("CleanLab",     _final(c, "cleanlab")),
-            ("Kairos",       _final(c, "kairos")),
-            ("Auto-Hybrid",  _final(c, "hybrid_auto")),
-        ]
-        for i, (name, val) in enumerate(entries):
-            y = Inches(1.85 + i * 0.55)
-            bar_w = Inches(3.5 * (val or 0))
-            _rect(sl, Inches(9.0), y, bar_w, Inches(0.38),
-                  0x1f if name != "Kairos" else 0xd6,
-                  0x77 if name != "Kairos" else 0x27,
-                  0xb4 if name != "Kairos" else 0x28)
-            label = f"{name}: {val:.4f}" if val is not None else f"{name}: —"
-            _textbox(sl, label, Inches(9.05), y + Inches(0.05),
-                     Inches(3.8), Inches(0.3), size=10, bold=(name == "Kairos"), color=WHITE)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -649,13 +436,10 @@ def main():
     slide_methods(prs)
     slide_method_datascope(prs)
     slide_method_cleanlab(prs)
-    slide_method_kairos(prs)
-    slide_method_hybrids(prs)
     slide_heatmap(prs)
     for run in RUNS:
         slide_dataset_grid(prs, run)
     slide_findings(prs)
-    slide_kairos_note(prs)
 
     prs.save(str(OUT_PATH))
     print(f"Saved: {OUT_PATH}")
