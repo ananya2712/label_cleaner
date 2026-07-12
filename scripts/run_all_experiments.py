@@ -417,7 +417,7 @@ def _plot_dp_grid(
                 all_y.extend(curves.datascope_removal_dp)
             y_min, y_max = min(all_y), max(all_y)
             pad = max(0.005, (y_max - y_min) * 0.15)
-            ax.set_ylim(y_min - pad, y_max + pad)
+            ax.set_ylim(max(0.0, y_min - pad), min(1.0, y_max + pad))
 
             ax.grid(True, linestyle=":", linewidth=0.6, alpha=0.6)
             ax.tick_params(labelsize=7)
@@ -500,8 +500,9 @@ def main() -> int:
                     curves = _curves_from_cache(cache_dir)
                     figure_path = figures_dir / f"{slug}.png"
                     _plot_curves(figure_path, dataset, noise_type, pipeline_key, curves)
-                    dp_figure_path = figures_dir / f"{slug}__dp.png"
-                    _plot_dp_curves(dp_figure_path, dataset, noise_type, pipeline_key, curves)
+                    if curves.datascope_dp is not None:
+                        dp_figure_path = figures_dir / f"{slug}__dp.png"
+                        _plot_dp_curves(dp_figure_path, dataset, noise_type, pipeline_key, curves)
                     dataset_curves.setdefault(pipeline_key, {})[noise_type] = curves
                     continue
 
@@ -639,11 +640,16 @@ def main() -> int:
             dataset, args.noise_level, args.noise_types, args.pipelines,
             dataset_curves, proportions,
         )
-        _plot_dp_grid(
-            figures_dir / f"{dataset}__all_noise_types_dp.png",
-            dataset, args.noise_level, args.noise_types, args.pipelines,
-            dataset_curves, proportions,
-        )
+        if all(
+            curves.datascope_dp is not None
+            for by_noise in dataset_curves.values()
+            for curves in by_noise.values()
+        ):
+            _plot_dp_grid(
+                figures_dir / f"{dataset}__all_noise_types_dp.png",
+                dataset, args.noise_level, args.noise_types, args.pipelines,
+                dataset_curves, proportions,
+            )
 
     with (args.output_dir / "summary.json").open("w", encoding="utf-8") as handle:
         json.dump(summary_rows, handle, indent=2, default=_json_default)
@@ -660,7 +666,13 @@ def main() -> int:
                     "datascope_final",
                     "cleanlab_final",
                     "random_final",
+                    "baseline_dp",
+                    "datascope_dp_final",
+                    "datascope_fair_final",
+                    "datascope_fair_dp_final",
+                    "fair_heuristic_dp_final",
                     "figure",
+                    "dp_figure",
                     "cache",
                 ],
             ),
