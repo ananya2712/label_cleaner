@@ -18,7 +18,7 @@ clean_cleanlab   — rank by CleanLab self_confidence, clean most-suspicious fir
 clean_random     — shuffle noisy positions randomly (baseline)
 """
 
-from typing import Callable, List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 from cleanlab.filter import find_label_issues
@@ -88,7 +88,7 @@ def clean_datascope(
     proportions: np.ndarray,
     importance_method: ImportanceMethod = ImportanceMethod.NEIGHBOR,
     mc_iterations: int = 50,
-    protected_test: np.ndarray = None,
+    protected_test: Optional[np.ndarray] = None,
 ) -> Tuple[List[float], List[float], np.ndarray]:
     """
     DataScope cleaning: rank noisy samples by Shapley importance (most harmful
@@ -197,6 +197,9 @@ def _dp_heuristic_scores(y_train: np.ndarray, protected_train: np.ndarray,
     training-label selection-rate gap if that sample alone were removed
     from its (group, label) cell. Positive = removal shrinks the gap.
     Each candidate is scored independently against the ORIGINAL counts.
+    The score is label-gap-only by design: for feature-corruption noise
+    (outlier, MNAR) it is a deliberately weak, model-free baseline whose
+    ranking signal is only incidentally related to the noise.
     """
     prot = np.asarray(protected_train, dtype=bool)
     n_p, n_u = int(prot.sum()), int((~prot).sum())
@@ -271,7 +274,7 @@ def clean_cleanlab(
     action_fn: Callable,
     proportions: np.ndarray,
     n_jobs: int = 1,
-    protected_test: np.ndarray = None,
+    protected_test: Optional[np.ndarray] = None,
 ) -> Tuple[List[float], List[float], np.ndarray]:
     """
     CleanLab cleaning: rank ALL training samples by self_confidence score
@@ -340,7 +343,7 @@ def clean_random(
     action_fn: Callable,
     proportions: np.ndarray,
     n_seeds: int = 3,
-    protected_test: np.ndarray = None,
+    protected_test: Optional[np.ndarray] = None,
 ) -> Tuple[List[float], List[float], List[float], List[float]]:
     """
     Random cleaning baseline: shuffle noisy_positions randomly and apply

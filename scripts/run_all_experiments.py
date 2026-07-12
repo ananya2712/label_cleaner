@@ -277,6 +277,22 @@ def _plot_curves(path: Path, dataset: str, noise_type: str, pipeline_key: str, c
     plt.close(fig)
 
 
+def _has_dp_curves(curves) -> bool:
+    """True if `curves` carries every DP field needed to plot the DP figures.
+
+    Cached curves produced before DP fields existed leave these as None,
+    which would otherwise crash the DP plotting helpers below.
+    """
+    return (
+        curves.datascope_dp is not None
+        and curves.cleanlab_dp is not None
+        and curves.random_dp_mean is not None
+        and curves.random_dp_std is not None
+        and curves.datascope_fair_dp is not None
+        and curves.fair_heuristic_dp is not None
+    )
+
+
 def _plot_dp_curves(path: Path, dataset: str, noise_type: str, pipeline_key: str, curves) -> None:
     proportions_pct = np.array(curves.proportions) * 100.0
     dp_rnd_mean = np.array(curves.random_dp_mean)
@@ -500,7 +516,7 @@ def main() -> int:
                     curves = _curves_from_cache(cache_dir)
                     figure_path = figures_dir / f"{slug}.png"
                     _plot_curves(figure_path, dataset, noise_type, pipeline_key, curves)
-                    if curves.datascope_dp is not None:
+                    if _has_dp_curves(curves):
                         dp_figure_path = figures_dir / f"{slug}__dp.png"
                         _plot_dp_curves(dp_figure_path, dataset, noise_type, pipeline_key, curves)
                     dataset_curves.setdefault(pipeline_key, {})[noise_type] = curves
@@ -641,7 +657,7 @@ def main() -> int:
             dataset_curves, proportions,
         )
         if all(
-            curves.datascope_dp is not None
+            _has_dp_curves(curves)
             for by_noise in dataset_curves.values()
             for curves in by_noise.values()
         ):
@@ -650,6 +666,8 @@ def main() -> int:
                 dataset, args.noise_level, args.noise_types, args.pipelines,
                 dataset_curves, proportions,
             )
+        else:
+            print(f"skipping DP grid for {dataset}: cached curves predate DP fields")
 
     with (args.output_dir / "summary.json").open("w", encoding="utf-8") as handle:
         json.dump(summary_rows, handle, indent=2, default=_json_default)

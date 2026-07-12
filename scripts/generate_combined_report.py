@@ -218,6 +218,26 @@ def _plot_dataset_grid(dataset: str, noise_level: float, run_dir: Path,
     plt.close(fig)
 
 
+def _has_dp(c: dict) -> bool:
+    """True if cached curves dict `c` carries every DP field these plots/tables need.
+
+    Curves cached before DP fields existed leave these keys missing or None,
+    which would otherwise crash the DP plotting/table code below.
+    """
+    return all(
+        c.get(key) is not None
+        for key in (
+            "datascope_dp",
+            "cleanlab_dp",
+            "random_dp_mean",
+            "random_dp_std",
+            "datascope_fair_dp",
+            "fair_heuristic_dp",
+            "baseline_dp",
+        )
+    )
+
+
 def _plot_dataset_grid_dp(dataset: str, noise_level: float, run_dir: Path,
                           all_curves: dict, output_path: Path) -> None:
     x_vals = None
@@ -229,7 +249,7 @@ def _plot_dataset_grid_dp(dataset: str, noise_level: float, run_dir: Path,
         for col, noise_type in enumerate(NOISE_TYPES):
             ax   = axes[row][col]
             c    = all_curves.get((dataset, noise_type, pipeline))
-            if c is None or not c.get("datascope_dp"):
+            if c is None or not _has_dp(c):
                 ax.set_visible(False)
                 continue
 
@@ -403,7 +423,7 @@ def main() -> int:
         for nt in NOISE_TYPES:
             for pipeline in PIPELINES:
                 c = all_curves.get((ds, nt, pipeline))
-                if c is None or not c.get("datascope_dp"):
+                if c is None or not _has_dp(c):
                     continue
                 dp_rows.append({
                     "dataset":       ds,

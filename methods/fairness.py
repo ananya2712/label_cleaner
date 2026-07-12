@@ -4,7 +4,13 @@ Fairness metrics and datascope utilities.
 demographic_parity_gap — |P(ŷ=1 | protected) − P(ŷ=1 | unprotected)|
 """
 
+from typing import Hashable, List, Optional, Union
+
 import numpy as np
+from numpy.typing import NDArray
+from pandas import DataFrame, Series
+
+from datascope.importance.utility import MetricCallable, SklearnModelUtility
 
 
 def demographic_parity_gap(y_pred: np.ndarray, protected_mask: np.ndarray) -> float:
@@ -24,13 +30,6 @@ def demographic_parity_gap(y_pred: np.ndarray, protected_mask: np.ndarray) -> fl
     rate_p = float(np.mean(y_pred[protected_mask] == 1))
     rate_u = float(np.mean(y_pred[~protected_mask] == 1))
     return abs(rate_p - rate_u)
-
-
-from typing import Hashable, List, Optional, Union
-
-from numpy.typing import NDArray
-from pandas import DataFrame, Series
-from datascope.importance.utility import MetricCallable, SklearnModelUtility
 
 
 class SklearnModelDemographicParityDifference(SklearnModelUtility):
@@ -99,7 +98,7 @@ class SklearnModelDemographicParityDifference(SklearnModelUtility):
             idx_max = idx_p if rate_p > rate_u else idx_u
             idx_min = idx_u if rate_p > rate_u else idx_p
             pos_rows = np.where(classes == 1)[0]
-            if len(pos_rows) == 1:
+            if len(pos_rows) == 1:  # class 1 present in y_train (np.unique gives at most one match)
                 r = pos_rows[0]
                 # Predicting 1 for a higher-rate-group point widens the gap
                 # (negative utility); for a lower-rate-group point it narrows it.
