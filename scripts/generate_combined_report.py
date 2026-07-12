@@ -33,9 +33,9 @@ import matplotlib.pyplot as plt
 # ── Configuration ────────────────────────────────────────────────────────────
 
 RUNS = [
-    {"dataset": "adult",   "noise_level": 0.20, "run_dir": REPO_ROOT / "artifacts" / "run_v5" / "adult_20pct"},
-    {"dataset": "german",  "noise_level": 0.20, "run_dir": REPO_ROOT / "artifacts" / "run_v5" / "german_20pct"},
-    {"dataset": "titanic", "noise_level": 0.20, "run_dir": REPO_ROOT / "artifacts" / "run_v5" / "titanic_20pct"},
+    {"dataset": "adult",   "noise_level": 0.20, "run_dir": REPO_ROOT / "artifacts" / "run_v6" / "adult_20pct"},
+    {"dataset": "german",  "noise_level": 0.20, "run_dir": REPO_ROOT / "artifacts" / "run_v6" / "german_20pct"},
+    {"dataset": "titanic", "noise_level": 0.20, "run_dir": REPO_ROOT / "artifacts" / "run_v6" / "titanic_20pct"},
 ]
 
 NOISE_TYPES = ["outlier", "rnd_label", "nnar", "mnar"]
@@ -57,7 +57,7 @@ STYLES = {
     "random_mean": "--",
 }
 
-OUTPUT_DIR = REPO_ROOT / "artifacts" / "run_v5" / "combined_report"
+OUTPUT_DIR = REPO_ROOT / "artifacts" / "run_v6" / "combined_report"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
