@@ -256,7 +256,7 @@ def _plot_dataset_grid_dp(dataset: str, noise_level: float, run_dir: Path,
                 all_y.extend(c["datascope_removal_dp"])
             y_min, y_max = min(all_y), max(all_y)
             pad = max(0.005, (y_max - y_min) * 0.15)
-            ax.set_ylim(max(0.0, y_min - pad), y_max + pad)
+            ax.set_ylim(max(0.0, y_min - pad), min(1.0, y_max + pad))
 
             ax.grid(True, linestyle=":", linewidth=0.6, alpha=0.6)
             ax.tick_params(labelsize=7)
