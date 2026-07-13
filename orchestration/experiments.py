@@ -4,7 +4,7 @@ Experiment service layer.
 Each run_* function orchestrates:
   1) fixed split prep
   2) noise injection
-  3) DataScope / Random / CleanLab cleaning methodologies
+  3) DataScope / Random / CleanLab / Entropy cleaning methodologies
 """
 
 from typing import Callable, Dict, Tuple
@@ -21,6 +21,7 @@ from ..methods.cleaning import (
     clean_cleanlab,
     clean_datascope,
     clean_datascope_fair,
+    clean_entropy,
     clean_fair_heuristic,
     clean_random,
 )
@@ -71,6 +72,10 @@ def _run_methods(pipeline_factory: Callable, X_train_noisy, y_train_noisy, X_tes
         pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
         action_fn, proportions, n_jobs=n_cleanlab_jobs, protected_test=protected_test,
     )
+    accs_ent, dps_ent, ent_ranked = clean_entropy(
+        pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
+        action_fn, proportions, n_jobs=n_cleanlab_jobs, protected_test=protected_test,
+    )
     accs_dsf, dps_dsf, dsf_ranked = clean_datascope_fair(
         pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
         noisy_positions, action_fn, proportions, protected_test,
@@ -82,6 +87,7 @@ def _run_methods(pipeline_factory: Callable, X_train_noisy, y_train_noisy, X_tes
     return {
         "datascope": {"acc": accs_ds, "dp": dps_ds, "ranked": ds_ranked},
         "cleanlab": {"acc": accs_cl, "dp": dps_cl, "ranked": cl_ranked},
+        "entropy": {"acc": accs_ent, "dp": dps_ent, "ranked": ent_ranked},
         "datascope_fair": {"acc": accs_dsf, "dp": dps_dsf, "ranked": dsf_ranked},
         "fair_heuristic": {"acc": accs_fh, "dp": dps_fh, "ranked": fh_ranked},
         "random": {"acc_mean": rnd_acc_mean, "acc_std": rnd_acc_std,
@@ -172,6 +178,8 @@ def run_outlier_experiment_with_artifacts(
         datascope_fair_dp=results["datascope_fair"]["dp"],
         fair_heuristic=results["fair_heuristic"]["acc"],
         fair_heuristic_dp=results["fair_heuristic"]["dp"],
+        entropy=results["entropy"]["acc"],
+        entropy_dp=results["entropy"]["dp"],
     )
     return ExperimentArtifacts(
         curves=curves,
@@ -182,6 +190,7 @@ def run_outlier_experiment_with_artifacts(
         random_rankings=_random_rankings(bundle.noisy_positions),
         datascope_fair_ranked=results["datascope_fair"]["ranked"],
         fair_heuristic_ranked=results["fair_heuristic"]["ranked"],
+        entropy_ranked=results["entropy"]["ranked"],
     )
 
 
@@ -240,6 +249,8 @@ def run_random_label_experiment_with_artifacts(
         datascope_fair_dp=results["datascope_fair"]["dp"],
         fair_heuristic=results["fair_heuristic"]["acc"],
         fair_heuristic_dp=results["fair_heuristic"]["dp"],
+        entropy=results["entropy"]["acc"],
+        entropy_dp=results["entropy"]["dp"],
     )
     return ExperimentArtifacts(
         curves=curves,
@@ -250,6 +261,7 @@ def run_random_label_experiment_with_artifacts(
         random_rankings=_random_rankings(bundle.noisy_positions),
         datascope_fair_ranked=results["datascope_fair"]["ranked"],
         fair_heuristic_ranked=results["fair_heuristic"]["ranked"],
+        entropy_ranked=results["entropy"]["ranked"],
     )
 
 
@@ -312,6 +324,8 @@ def run_nnar_experiment_with_artifacts(
         datascope_fair_dp=results["datascope_fair"]["dp"],
         fair_heuristic=results["fair_heuristic"]["acc"],
         fair_heuristic_dp=results["fair_heuristic"]["dp"],
+        entropy=results["entropy"]["acc"],
+        entropy_dp=results["entropy"]["dp"],
     )
     return ExperimentArtifacts(
         curves=curves,
@@ -322,6 +336,7 @@ def run_nnar_experiment_with_artifacts(
         random_rankings=_random_rankings(bundle.noisy_positions),
         datascope_fair_ranked=results["datascope_fair"]["ranked"],
         fair_heuristic_ranked=results["fair_heuristic"]["ranked"],
+        entropy_ranked=results["entropy"]["ranked"],
     )
 
 
@@ -385,6 +400,8 @@ def run_mnar_experiment_with_artifacts(
         datascope_fair_dp=results["datascope_fair"]["dp"],
         fair_heuristic=results["fair_heuristic"]["acc"],
         fair_heuristic_dp=results["fair_heuristic"]["dp"],
+        entropy=results["entropy"]["acc"],
+        entropy_dp=results["entropy"]["dp"],
     )
     return ExperimentArtifacts(
         curves=curves,
@@ -395,6 +412,7 @@ def run_mnar_experiment_with_artifacts(
         random_rankings=_random_rankings(bundle.noisy_positions),
         datascope_fair_ranked=results["datascope_fair"]["ranked"],
         fair_heuristic_ranked=results["fair_heuristic"]["ranked"],
+        entropy_ranked=results["entropy"]["ranked"],
     )
 
 

@@ -21,9 +21,13 @@ def test_nnar_titanic_dp_curves():
     )
     c = artifacts.curves
     for name, curve in [("datascope_dp", c.datascope_dp), ("cleanlab_dp", c.cleanlab_dp),
-                        ("random_dp_mean", c.random_dp_mean)]:
+                        ("random_dp_mean", c.random_dp_mean), ("entropy_dp", c.entropy_dp)]:
         assert curve is not None and len(curve) == 3, name
         assert all(np.isfinite(v) and 0.0 <= v <= 1.0 for v in curve), (name, curve)
+    assert c.entropy is not None and len(c.entropy) == 3
+    ranked = artifacts.entropy_ranked
+    assert ranked is not None and len(ranked) == len(artifacts.split.y_train)
+    assert len(np.unique(ranked)) == len(ranked)
     assert c.baseline_dp is not None and 0.0 <= c.baseline_dp <= 1.0
     # At 0% cleaned, every method's DP equals the baseline DP.
     assert abs(c.datascope_dp[0] - c.baseline_dp) < 1e-9

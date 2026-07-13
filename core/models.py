@@ -37,6 +37,8 @@ class MethodCurves:
     datascope_fair_dp: Optional[List[float]] = None
     fair_heuristic: Optional[List[float]] = None
     fair_heuristic_dp: Optional[List[float]] = None
+    entropy: Optional[List[float]] = None
+    entropy_dp: Optional[List[float]] = None
 
 
 @dataclass
@@ -64,3 +66,4 @@ class ExperimentArtifacts:
     random_rankings: List[np.ndarray]
     datascope_fair_ranked: np.ndarray = None
     fair_heuristic_ranked: np.ndarray = None
+    entropy_ranked: np.ndarray = None
