@@ -54,7 +54,8 @@ clean_entropy(pipeline_factory, X_train, y_train, X_test, y_test,
   grids, summary tables, and the cleaned-sample cache.
 - `scripts/generate_combined_report.py`: entropy in METHODS, labels, colors,
   styles, accuracy/DP grids, and value tables.
-- Style: purple (`#9467bd`), dotted line, label "Entropy".
+- Style: teal (`#17becf`), dotted line, label "Entropy" (purple was taken by
+  DataScope-Fair in the DP figures).
 - Cache compatibility: `from-cache` runs missing entropy render "—" / skip the
   curve rather than crash (same guard pattern as the DP columns).
 

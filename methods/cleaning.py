@@ -15,6 +15,7 @@ Cleaners
 --------
 clean_datascope  — rank true noisy rows by Shapley importance
 clean_cleanlab   — rank by CleanLab self_confidence, clean most-suspicious first
+clean_entropy    — rank ALL rows by out-of-fold prediction entropy, most-uncertain first
 clean_random     — shuffle noisy positions randomly (baseline)
 """
 
@@ -321,6 +322,68 @@ def clean_cleanlab(
         dps.append(dp)
 
     return accs, dps, cl_ranked
+
+
+# ---------------------------------------------------------------------------
+# Entropy
+# ---------------------------------------------------------------------------
+
+def clean_entropy(
+    pipeline_factory: Callable,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    action_fn: Callable,
+    proportions: np.ndarray,
+    n_jobs: int = 1,
+    protected_test: Optional[np.ndarray] = None,
+) -> Tuple[List[float], List[float], np.ndarray]:
+    """
+    Entropy-based cleaning: rank ALL training samples by the Shannon entropy
+    of their out-of-fold predicted class probabilities (most uncertain first),
+    then incrementally apply `action_fn` to the top-k%.
+
+    Reintroduces the entropy method from the original thesis experiment
+    (F25 datascope_replication.py), with out-of-fold probabilities from
+    5-fold cross_val_predict instead of the original in-sample fit.
+
+    Like CleanLab, this method is unsupervised — it does not know the
+    ground-truth noisy positions.
+
+    Parameters
+    ----------
+    pipeline_factory : callable() → fresh sklearn Pipeline
+    X_train, y_train : training data (with injected noise)
+    X_test,  y_test  : clean held-out test set
+    action_fn        : callable(X_tr, y_tr, positions) → (X_tr_clean, y_tr_clean)
+    proportions      : array of fractions in [0, 1]
+    n_jobs           : parallelism for cross_val_predict (default 1 for safety)
+    protected_test   : bool mask over test rows for demographic parity measurement
+
+    Returns
+    -------
+    accs       : accuracy at each proportion
+    dps        : demographic parity gap at each proportion
+    ent_ranked : all training indices ranked most-to-least uncertain
+    """
+    pipeline   = pipeline_factory()
+    pred_probs = cross_val_predict(
+        pipeline, X_train, y_train,
+        cv=5, method="predict_proba", n_jobs=n_jobs,
+    )
+    entropy    = -np.sum(pred_probs * np.log2(pred_probs + 1e-9), axis=1)
+    ent_ranked = np.argsort(entropy)[::-1]
+
+    accs, dps = [], []
+    for p in proportions:
+        n_clean   = int(p * len(ent_ranked))
+        X_c, y_c  = action_fn(X_train, y_train, ent_ranked[:n_clean])
+        acc, dp = _safe_eval(pipeline_factory, X_c, y_c, X_test, y_test, protected_test)
+        accs.append(acc)
+        dps.append(dp)
+
+    return accs, dps, ent_ranked
 
 
 # ---------------------------------------------------------------------------
