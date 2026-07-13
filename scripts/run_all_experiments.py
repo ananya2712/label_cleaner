@@ -170,12 +170,14 @@ def _cleaned_cache(artifacts, proportions: Iterable[float]) -> Dict:
     cache = {
         "datascope": {},
         "cleanlab": {},
+        "entropy": {},
         "random": {},
     }
     for proportion in proportions:
         key = _round_key(float(proportion))
         ds_positions = _cleaned_prefix(artifacts.datascope_ranked, proportion)
         cl_positions = _cleaned_prefix(artifacts.cleanlab_ranked, proportion)
+        ent_positions = _cleaned_prefix(artifacts.entropy_ranked, proportion)
         cache["datascope"][key] = {
             "train_positions": [int(x) for x in ds_positions],
             "dataset_indices": _to_dataset_indices(artifacts.split.train_idx, ds_positions),
@@ -183,6 +185,10 @@ def _cleaned_cache(artifacts, proportions: Iterable[float]) -> Dict:
         cache["cleanlab"][key] = {
             "train_positions": [int(x) for x in cl_positions],
             "dataset_indices": _to_dataset_indices(artifacts.split.train_idx, cl_positions),
+        }
+        cache["entropy"][key] = {
+            "train_positions": [int(x) for x in ent_positions],
+            "dataset_indices": _to_dataset_indices(artifacts.split.train_idx, ent_positions),
         }
         random_entries = {}
         for seed_idx, ranking in enumerate(artifacts.random_rankings):
@@ -242,6 +248,8 @@ def _curves_from_cache(cache_dir: Path) -> MethodCurves:
         datascope_fair_dp=c.get("datascope_fair_dp"),
         fair_heuristic=c.get("fair_heuristic"),
         fair_heuristic_dp=c.get("fair_heuristic_dp"),
+        entropy=c.get("entropy"),
+        entropy_dp=c.get("entropy_dp"),
     )
 
 
@@ -255,6 +263,9 @@ def _plot_curves(path: Path, dataset: str, noise_type: str, pipeline_key: str, c
             color="#1f77b4", linestyle="-",  linewidth=1.8, label="DataScope")
     ax.plot(proportions_pct, curves.cleanlab,
             color="#d62728", linestyle="--", linewidth=1.8, label="CleanLab")
+    if curves.entropy is not None:
+        ax.plot(proportions_pct, curves.entropy,
+                color="#17becf", linestyle=":", linewidth=1.8, label="Entropy")
     ax.plot(proportions_pct, rnd_mean,
             color="#ff7f0e", linestyle="--", linewidth=1.4, label="Random")
     ax.fill_between(proportions_pct, rnd_mean - rnd_std, rnd_mean + rnd_std,
@@ -303,6 +314,9 @@ def _plot_dp_curves(path: Path, dataset: str, noise_type: str, pipeline_key: str
             color="#1f77b4", linestyle="-",  linewidth=1.8, label="DataScope")
     ax.plot(proportions_pct, curves.cleanlab_dp,
             color="#d62728", linestyle="--", linewidth=1.8, label="CleanLab")
+    if curves.entropy_dp is not None:
+        ax.plot(proportions_pct, curves.entropy_dp,
+                color="#17becf", linestyle=":", linewidth=1.8, label="Entropy")
     ax.plot(proportions_pct, dp_rnd_mean,
             color="#ff7f0e", linestyle="--", linewidth=1.4, label="Random")
     ax.fill_between(proportions_pct, dp_rnd_mean - dp_rnd_std, dp_rnd_mean + dp_rnd_std,
@@ -348,12 +362,16 @@ def _plot_grid(
 
             ax.plot(x, curves.datascope, color="#1f77b4", linestyle="-",  linewidth=1.8, label="DataScope")
             ax.plot(x, curves.cleanlab,  color="#d62728", linestyle="--", linewidth=1.8, label="CleanLab")
+            if curves.entropy is not None:
+                ax.plot(x, curves.entropy, color="#17becf", linestyle=":", linewidth=1.8, label="Entropy")
             ax.plot(x, rnd_mean,         color="#ff7f0e", linestyle="--", linewidth=1.4, label="Random")
             ax.fill_between(x, rnd_mean - rnd_std, rnd_mean + rnd_std, color="#ff7f0e", alpha=0.25)
             ax.axhline(curves.baseline,  color="#ff7f0e", linestyle="--", linewidth=1.0, label="Baseline")
             if curves.datascope_removal is not None:
                 ax.plot(x, curves.datascope_removal, color="#2ca02c", linestyle="-", linewidth=1.4, label="DS removal")
             all_y = [*curves.datascope, *curves.cleanlab, *rnd_mean, curves.baseline]
+            if curves.entropy is not None:
+                all_y.extend(v for v in curves.entropy if np.isfinite(v))
             if curves.datascope_removal is not None:
                 all_y.extend(curves.datascope_removal)
             y_min, y_max = min(all_y), max(all_y)
@@ -369,6 +387,10 @@ def _plot_grid(
             final_labels = [
                 f"DataScope: {curves.datascope[-1]:.3f}",
                 f"CleanLab: {curves.cleanlab[-1]:.3f}",
+            ]
+            if curves.entropy is not None:
+                final_labels.append(f"Entropy: {curves.entropy[-1]:.3f}")
+            final_labels += [
                 f"Random: {rnd_mean[-1]:.3f}",
                 f"Baseline: {curves.baseline:.3f}",
             ]
@@ -419,6 +441,8 @@ def _plot_dp_grid(
 
             ax.plot(x, curves.datascope_dp, color="#1f77b4", linestyle="-",  linewidth=1.8, label="DataScope")
             ax.plot(x, curves.cleanlab_dp,  color="#d62728", linestyle="--", linewidth=1.8, label="CleanLab")
+            if curves.entropy_dp is not None:
+                ax.plot(x, curves.entropy_dp, color="#17becf", linestyle=":", linewidth=1.8, label="Entropy")
             ax.plot(x, dp_rnd_mean,         color="#ff7f0e", linestyle="--", linewidth=1.4, label="Random")
             ax.fill_between(x, dp_rnd_mean - dp_rnd_std, dp_rnd_mean + dp_rnd_std, color="#ff7f0e", alpha=0.25)
             ax.plot(x, curves.datascope_fair_dp, color="#9467bd", linestyle="-", linewidth=2.0, label="DataScope-Fair")
@@ -429,6 +453,8 @@ def _plot_dp_grid(
 
             all_y = [*curves.datascope_dp, *curves.cleanlab_dp, *dp_rnd_mean,
                      *curves.datascope_fair_dp, *curves.fair_heuristic_dp, curves.baseline_dp]
+            if curves.entropy_dp is not None:
+                all_y.extend(v for v in curves.entropy_dp if np.isfinite(v))
             if curves.datascope_removal_dp is not None:
                 all_y.extend(curves.datascope_removal_dp)
             y_min, y_max = min(all_y), max(all_y)
@@ -444,6 +470,10 @@ def _plot_dp_grid(
             final_labels = [
                 f"DataScope: {curves.datascope_dp[-1]:.3f}",
                 f"CleanLab: {curves.cleanlab_dp[-1]:.3f}",
+            ]
+            if curves.entropy_dp is not None:
+                final_labels.append(f"Entropy: {curves.entropy_dp[-1]:.3f}")
+            final_labels += [
                 f"Random: {dp_rnd_mean[-1]:.3f}",
                 f"DataScope-Fair: {curves.datascope_fair_dp[-1]:.3f}",
                 f"Fair heuristic: {curves.fair_heuristic_dp[-1]:.3f}",
@@ -571,6 +601,12 @@ def main() -> int:
                     "cleanlab_ranked_dataset_indices": _to_dataset_indices(
                         artifacts.split.train_idx, artifacts.cleanlab_ranked
                     ),
+                    "entropy_ranked_train_positions": [
+                        int(x) for x in artifacts.entropy_ranked.tolist()
+                    ],
+                    "entropy_ranked_dataset_indices": _to_dataset_indices(
+                        artifacts.split.train_idx, artifacts.entropy_ranked
+                    ),
                     "random_ranked_train_positions": {
                         f"seed_{idx}": [int(x) for x in ranking.tolist()]
                         for idx, ranking in enumerate(artifacts.random_rankings)
@@ -596,6 +632,7 @@ def main() -> int:
                         "baseline": round(float(artifacts.curves.baseline), 4),
                         "datascope_final": round(float(artifacts.curves.datascope[final_idx]), 4),
                         "cleanlab_final": round(float(artifacts.curves.cleanlab[final_idx]), 4),
+                        "entropy_final": round(float(artifacts.curves.entropy[final_idx]), 4),
                         "random_final": round(float(artifacts.curves.random_mean[final_idx]), 4),
                         "figure": f"figures/{slug}.png",
                         "cache": f"caches/{slug}/summary.json",
@@ -617,6 +654,7 @@ def main() -> int:
                         f"- Baseline accuracy: `{artifacts.curves.baseline:.4f}`",
                         f"- Final DataScope accuracy: `{artifacts.curves.datascope[-1]:.4f}`",
                         f"- Final CleanLab accuracy: `{artifacts.curves.cleanlab[-1]:.4f}`",
+                        f"- Final Entropy accuracy: `{artifacts.curves.entropy[-1]:.4f}`",
                         f"- Final Random mean accuracy: `{artifacts.curves.random_mean[-1]:.4f}`",
                         f"- True noisy training rows: `{len(artifacts.bundle.noisy_positions)}`",
                         f"- Cache files: `caches/{slug}/summary.json`, `caches/{slug}/train_records.jsonl`",
@@ -683,6 +721,7 @@ def main() -> int:
                     "baseline",
                     "datascope_final",
                     "cleanlab_final",
+                    "entropy_final",
                     "random_final",
                     "baseline_dp",
                     "datascope_dp_final",
