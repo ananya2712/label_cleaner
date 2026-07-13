@@ -17,18 +17,21 @@ import numpy as np
 
 
 def inject_outlier(X: np.ndarray, col_idx: int, noise_level: float,
-                   outlier_value: float = 100, seed: int = 42):
+                   k_range: tuple = (3.0, 5.0), seed: int = 42):
     """
-    Inject a fixed extreme value into `col_idx` for a uniformly random fraction
-    of rows — no demographic targeting (MAR).
+    Inject scale-aware high-side extremes into `col_idx` for a uniformly
+    random fraction of rows — no demographic targeting (MAR).
+
+    Each corrupted row gets its own extreme value `mean + k·σ` with
+    k ~ Uniform(k_range), where mean and σ come from the clean column.
 
     Parameters
     ----------
-    X             : feature array (n_samples, n_features) — not modified in place
-    col_idx       : column to corrupt
-    noise_level   : fraction of ALL rows to corrupt
-    outlier_value : value to inject (default 100)
-    seed          : random seed
+    X           : feature array (n_samples, n_features) — not modified in place
+    col_idx     : column to corrupt
+    noise_level : fraction of ALL rows to corrupt
+    k_range     : (low, high) bounds for the per-row sigma multiplier
+    seed        : random seed
 
     Returns
     -------
@@ -44,8 +47,9 @@ def inject_outlier(X: np.ndarray, col_idx: int, noise_level: float,
     std_x     = np.nanstd(X[:, col_idx])
     cap_value = mean_x + 2 * std_x
 
+    k = rng.uniform(k_range[0], k_range[1], size=n_noisy)
     X_noisy = X.copy().astype(float)
-    X_noisy[noisy_positions, col_idx] = outlier_value
+    X_noisy[noisy_positions, col_idx] = mean_x + k * std_x
 
     return X_noisy, noisy_positions, cap_value
 
