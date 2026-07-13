@@ -40,20 +40,23 @@ RUNS = [
 
 NOISE_TYPES = ["outlier", "rnd_label", "nnar", "mnar"]
 PIPELINES   = ["p1a", "p2b"]
-METHODS     = ["datascope", "cleanlab", "random_mean"]
+METHODS     = ["datascope", "cleanlab", "entropy", "random_mean"]
 METHOD_LABELS = {
     "datascope":   "DataScope",
     "cleanlab":    "CleanLab",
+    "entropy":     "Entropy",
     "random_mean": "Random",
 }
 COLORS = {
     "datascope":   "#1f77b4",
     "cleanlab":    "#d62728",
+    "entropy":     "#17becf",
     "random_mean": "#ff7f0e",
 }
 STYLES = {
     "datascope":   "-",
     "cleanlab":    "--",
+    "entropy":     ":",
     "random_mean": "--",
 }
 
@@ -168,6 +171,8 @@ def _plot_dataset_grid(dataset: str, noise_level: float, run_dir: Path,
 
             ax.plot(props, c["datascope"],  color=COLORS["datascope"],   linestyle=STYLES["datascope"],   linewidth=1.8, label="DataScope")
             ax.plot(props, c["cleanlab"],   color=COLORS["cleanlab"],    linestyle=STYLES["cleanlab"],    linewidth=1.8, label="CleanLab")
+            if c.get("entropy"):
+                ax.plot(props, c["entropy"], color=COLORS["entropy"], linestyle=STYLES["entropy"], linewidth=1.8, label="Entropy")
             ax.plot(props, rnd_mean,        color=COLORS["random_mean"], linestyle=STYLES["random_mean"], linewidth=1.4, label="Random")
             ax.fill_between(props, rnd_mean - rnd_std, rnd_mean + rnd_std, color=COLORS["random_mean"], alpha=0.25)
             ax.axhline(c["baseline"],       color=COLORS["random_mean"], linestyle="--", linewidth=1.0, label="Baseline")
@@ -175,6 +180,8 @@ def _plot_dataset_grid(dataset: str, noise_level: float, run_dir: Path,
                 ax.plot(props, c["datascope_removal"], color="#2ca02c",  linestyle="-",                   linewidth=1.4, label="DS removal")
 
             all_y = [*c["datascope"], *c["cleanlab"], *rnd_mean, c["baseline"]]
+            if c.get("entropy"):
+                all_y.extend(v for v in c["entropy"] if np.isfinite(v))
             if c.get("datascope_removal"):
                 all_y.extend(c["datascope_removal"])
             y_min, y_max = min(all_y), max(all_y)
@@ -190,6 +197,10 @@ def _plot_dataset_grid(dataset: str, noise_level: float, run_dir: Path,
             final_labels = [
                 f"DataScope: {c['datascope'][-1]:.3f}",
                 f"CleanLab: {c['cleanlab'][-1]:.3f}",
+            ]
+            if c.get("entropy"):
+                final_labels.append(f"Entropy: {c['entropy'][-1]:.3f}")
+            final_labels += [
                 f"Random: {rnd_mean[-1]:.3f}",
                 f"Baseline: {c['baseline']:.3f}",
             ]
@@ -262,6 +273,8 @@ def _plot_dataset_grid_dp(dataset: str, noise_level: float, run_dir: Path,
 
             ax.plot(props, c["datascope_dp"],       color="#1f77b4", linestyle="-",    linewidth=1.8, label="DataScope")
             ax.plot(props, c["cleanlab_dp"],        color="#d62728", linestyle="--",   linewidth=1.8, label="CleanLab")
+            if c.get("entropy_dp"):
+                ax.plot(props, c["entropy_dp"], color="#17becf", linestyle=":", linewidth=1.8, label="Entropy")
             ax.plot(props, rnd_mean,                color="#ff7f0e", linestyle="--",   linewidth=1.4, label="Random")
             ax.fill_between(props, rnd_mean - rnd_std, rnd_mean + rnd_std, color="#ff7f0e", alpha=0.25)
             ax.plot(props, c["datascope_fair_dp"],  color="#9467bd", linestyle="-",    linewidth=1.8, label="DataScope-Fair")
@@ -272,6 +285,8 @@ def _plot_dataset_grid_dp(dataset: str, noise_level: float, run_dir: Path,
 
             all_y = [*c["datascope_dp"], *c["cleanlab_dp"], *rnd_mean,
                      *c["datascope_fair_dp"], *c["fair_heuristic_dp"], c["baseline_dp"]]
+            if c.get("entropy_dp"):
+                all_y.extend(v for v in c["entropy_dp"] if np.isfinite(v))
             if c.get("datascope_removal_dp"):
                 all_y.extend(c["datascope_removal_dp"])
             y_min, y_max = min(all_y), max(all_y)
@@ -287,6 +302,10 @@ def _plot_dataset_grid_dp(dataset: str, noise_level: float, run_dir: Path,
             final_labels = [
                 f"DataScope: {c['datascope_dp'][-1]:.3f}",
                 f"CleanLab: {c['cleanlab_dp'][-1]:.3f}",
+            ]
+            if c.get("entropy_dp"):
+                final_labels.append(f"Entropy: {c['entropy_dp'][-1]:.3f}")
+            final_labels += [
                 f"Random: {rnd_mean[-1]:.3f}",
                 f"DS-Fair: {c['datascope_fair_dp'][-1]:.3f}",
                 f"Fair heuristic: {c['fair_heuristic_dp'][-1]:.3f}",
@@ -372,6 +391,7 @@ def main() -> int:
         "**Methods compared:**",
         "- **DataScope** — Shapley-importance ranking (NEIGHBOR method), correction action",
         "- **CleanLab** — self_confidence ranking, correction action",
+        "- **Entropy** — out-of-fold prediction-entropy ranking (most uncertain first), correction action",
         "- **Random** — random ordering baseline (±1σ over 3 seeds)",
         "- **DS removal** *(outlier only)* — DataScope ranking, remove instead of cap",
         "",
@@ -401,6 +421,7 @@ def main() -> int:
                     "baseline":  f"{c['baseline']:.4f}",
                     "DataScope": f"{_final(c, 'datascope'):.4f}"  if _final(c, 'datascope')  else "—",
                     "CleanLab":  f"{_final(c, 'cleanlab'):.4f}"   if _final(c, 'cleanlab')   else "—",
+                    "Entropy":   f"{_final(c, 'entropy'):.4f}"    if _final(c, 'entropy')    else "—",
                     "Random":    f"{_final(c, 'random_mean'):.4f}" if _final(c, 'random_mean') else "—",
                     "best_acc":  _best_method(c),
                 }
@@ -411,7 +432,7 @@ def main() -> int:
         "",
         _md_table(summary_rows,
                   ["dataset", "noise", "pipeline", "baseline",
-                   "DataScope", "CleanLab", "Random", "best_acc"]),
+                   "DataScope", "CleanLab", "Entropy", "Random", "best_acc"]),
         "",
         "---",
         "",
@@ -432,6 +453,7 @@ def main() -> int:
                     "baseline_dp":   f"{c['baseline_dp']:.4f}",
                     "DataScope":     f"{c['datascope_dp'][-1]:.4f}",
                     "CleanLab":      f"{c['cleanlab_dp'][-1]:.4f}",
+                    "Entropy":       f"{c['entropy_dp'][-1]:.4f}" if c.get("entropy_dp") else "—",
                     "DS-Fair":       f"{c['datascope_fair_dp'][-1]:.4f}",
                     "Fair-heuristic": f"{c['fair_heuristic_dp'][-1]:.4f}",
                     "Random":        f"{c['random_dp_mean'][-1]:.4f}",
@@ -445,7 +467,7 @@ def main() -> int:
             "",
             _md_table(dp_rows,
                       ["dataset", "noise", "pipeline", "baseline_dp",
-                       "DataScope", "CleanLab", "DS-Fair", "Fair-heuristic", "Random"]),
+                       "DataScope", "CleanLab", "Entropy", "DS-Fair", "Fair-heuristic", "Random"]),
             "",
             "### DP curves per dataset",
             "",
@@ -481,6 +503,7 @@ def main() -> int:
                     "baseline":  f"{c['baseline']:.4f}",
                     "DataScope": f"{_final(c, 'datascope'):.4f}"   if _final(c, 'datascope')   else "—",
                     "CleanLab":  f"{_final(c, 'cleanlab'):.4f}"    if _final(c, 'cleanlab')    else "—",
+                    "Entropy":   f"{_final(c, 'entropy'):.4f}"     if _final(c, 'entropy')     else "—",
                     "Random":    f"{_final(c, 'random_mean'):.4f}" if _final(c, 'random_mean') else "—",
                     "best":      _best_method(c),
                 })
@@ -489,7 +512,7 @@ def main() -> int:
                     f"### {nt}",
                     "",
                     _md_table(acc_rows,
-                              ["pipeline", "baseline", "DataScope", "CleanLab",
+                              ["pipeline", "baseline", "DataScope", "CleanLab", "Entropy",
                                "Random", "best"]),
                     "",
                 ]
