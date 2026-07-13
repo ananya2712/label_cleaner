@@ -67,6 +67,12 @@ def _draw(ax, c: dict) -> None:
     for key, label, color in SERIES:
         ax.plot(props, c[key], color=color, linestyle="-", linewidth=1.8, label=label)
         all_y.extend(v for v in c[key] if np.isfinite(v))
+    rnd_mean = np.array(c["random_mean"])
+    rnd_std = np.array(c["random_std"])
+    ax.plot(props, rnd_mean, color="#ff7f0e", linestyle="--", linewidth=1.4, label="Random")
+    ax.fill_between(props, rnd_mean - rnd_std, rnd_mean + rnd_std,
+                    color="#ff7f0e", alpha=0.25, label="±1σ Random")
+    all_y.extend(v for v in rnd_mean if np.isfinite(v))
     ax.axhline(c["baseline"], color="#7f7f7f", linestyle="--", linewidth=1.2,
                label=f"Baseline ({c['baseline']:.3f})")
     y_min, y_max = min(all_y), max(all_y)
@@ -101,7 +107,8 @@ def main() -> int:
         print(f"Saved: {out}")
         readme_rows.append(
             f"| {ds} | {pipeline} | {c['baseline']:.4f} "
-            f"| {c['datascope'][-1]:.4f} | {c['datascope_removal'][-1]:.4f} |"
+            f"| {c['datascope'][-1]:.4f} | {c['datascope_removal'][-1]:.4f} "
+            f"| {c['random_mean'][-1]:.4f} |"
         )
 
     # Grid figure: rows = pipelines, cols = datasets
@@ -133,11 +140,11 @@ def main() -> int:
     readme = [
         "# Outlier Focus Figures (run_v8)",
         "",
-        "Reduced view: DataScope (2σ capping), DataScope (removal), baseline.",
+        "Reduced view: DataScope (2σ capping), DataScope (removal), Random (±1σ), baseline.",
         "Generated from cached run_v8 results — no experiments were re-run.",
         "",
-        "| dataset | pipeline | baseline | DataScope (2σ capping) | DataScope (removal) |",
-        "| --- | --- | --- | --- | --- |",
+        "| dataset | pipeline | baseline | DataScope (2σ capping) | DataScope (removal) | Random |",
+        "| --- | --- | --- | --- | --- | --- |",
         *readme_rows,
         "",
     ]
