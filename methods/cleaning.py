@@ -36,11 +36,16 @@ from .fairness import SklearnModelDemographicParityDifference, demographic_parit
 # ---------------------------------------------------------------------------
 
 def _compute_importances(
-    pipeline, X_train, y_train, X_test, y_test,
+    pipeline, X_train, y_train, X_val, y_val,
     importance_method: ImportanceMethod = ImportanceMethod.NEIGHBOR,
     mc_iterations: int = 50,
 ) -> np.ndarray:
-    """Compute per-sample Shapley importance scores. Pipeline must be already fitted."""
+    """Compute per-sample Shapley importance scores. Pipeline must be already fitted.
+
+    Scored against a held-out validation set (X_val, y_val), distinct from the
+    final test set, so the ranking is never informed by the same data used to
+    report final accuracy/DP.
+    """
     utility       = SklearnModelAccuracy(pipeline[-1])
     feature_pipes = pipeline[:-1]
     imp = ShapleyImportance(
@@ -49,7 +54,7 @@ def _compute_importances(
         utility=utility,
         mc_iterations=mc_iterations,
     )
-    return imp.fit(X_train, y_train).score(X_test, y_test)
+    return imp.fit(X_train, y_train).score(X_val, y_val)
 
 
 def _safe_eval(
@@ -90,6 +95,8 @@ def clean_datascope(
     importance_method: ImportanceMethod = ImportanceMethod.NEIGHBOR,
     mc_iterations: int = 50,
     protected_test: Optional[np.ndarray] = None,
+    X_val: Optional[np.ndarray] = None,
+    y_val: Optional[np.ndarray] = None,
 ) -> Tuple[List[float], List[float], np.ndarray]:
     """
     DataScope cleaning: rank noisy samples by Shapley importance (most harmful
@@ -99,7 +106,11 @@ def clean_datascope(
     ----------
     pipeline_factory : callable() → fresh sklearn Pipeline
     X_train, y_train : training data (with injected noise)
-    X_test,  y_test  : clean held-out test set
+    X_test,  y_test  : clean held-out test set (final accuracy/DP reporting only)
+    X_val,   y_val   : held-out validation set used to score the Shapley utility
+                       function. Falls back to X_test/y_test if not supplied,
+                       for backward compatibility, but callers should always
+                       pass a validation split distinct from the test set.
     noisy_positions  : ground-truth noisy row indices (in train space)
     action_fn        : callable(X_tr, y_tr, positions) → (X_tr_clean, y_tr_clean)
                        encapsulates the noise-type-specific cleaning action
@@ -112,10 +123,13 @@ def clean_datascope(
     dps          : demographic parity gap at each proportion
     ranked_noisy : noisy_positions sorted most-harmful first (DataScope order)
     """
+    if X_val is None or y_val is None:
+        X_val, y_val = X_test, y_test
+
     pipeline = pipeline_factory()
     pipeline.fit(X_train, y_train)
 
-    importances  = _compute_importances(pipeline, X_train, y_train, X_test, y_test, importance_method, mc_iterations)
+    importances  = _compute_importances(pipeline, X_train, y_train, X_val, y_val, importance_method, mc_iterations)
     sorted_order = np.argsort(importances[noisy_positions])  # ascending: lowest (most harmful) Shapley importance first
     ranked_noisy = noisy_positions[sorted_order]
 
@@ -145,6 +159,9 @@ def clean_datascope_fair(
     action_fn: Callable,
     proportions: np.ndarray,
     protected_test: np.ndarray,
+    X_val: Optional[np.ndarray] = None,
+    y_val: Optional[np.ndarray] = None,
+    protected_val: Optional[np.ndarray] = None,
 ) -> Tuple[List[float], List[float], np.ndarray]:
     """
     Fairness-aware DataScope cleaning (λ=1, pure demographic parity).
@@ -155,24 +172,32 @@ def clean_datascope_fair(
     fairness-harmful first — the same convention as accuracy DataScope.
     Uses ImportanceMethod.NEIGHBOR (the utility implements elementwise_score).
 
+    X_val/y_val/protected_val : held-out validation set (and its matching
+    protected-attribute mask) used to score the Shapley utility, distinct
+    from X_test/y_test/protected_test used for final reporting. Falls back
+    to the test split if not supplied, for backward compatibility.
+
     Returns
     -------
     accs   : accuracy at each proportion
     dps    : demographic parity gap at each proportion
     ranked : noisy_positions sorted most fairness-harmful first
     """
+    if X_val is None or y_val is None or protected_val is None:
+        X_val, y_val, protected_val = X_test, y_test, protected_test
+
     pipeline = pipeline_factory()
     pipeline.fit(X_train, y_train)
 
     utility = SklearnModelDemographicParityDifference(
-        pipeline[-1], groupings=np.asarray(protected_test, dtype=int)
+        pipeline[-1], groupings=np.asarray(protected_val, dtype=int)
     )
     imp = ShapleyImportance(
         method=ImportanceMethod.NEIGHBOR,
         pipeline=pipeline[:-1],
         utility=utility,
     )
-    importances  = imp.fit(X_train, y_train).score(X_test, y_test)
+    importances  = imp.fit(X_train, y_train).score(X_val, y_val)
     sorted_order = np.argsort(importances[noisy_positions])  # ascending: most gap-inflating first
     ranked_noisy = noisy_positions[sorted_order]
 

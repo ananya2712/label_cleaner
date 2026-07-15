@@ -57,12 +57,13 @@ def _run_methods(pipeline_factory: Callable, X_train_noisy, y_train_noisy, X_tes
                  noisy_positions, action_fn, proportions, protected_test, protected_train,
                  n_cleanlab_jobs: int = 1,
                  importance_method: ImportanceMethod = ImportanceMethod.NEIGHBOR,
-                 mc_iterations: int = 50) -> Dict:
+                 mc_iterations: int = 50,
+                 X_val=None, y_val=None, protected_val=None) -> Dict:
     accs_ds, dps_ds, ds_ranked = clean_datascope(
         pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
         noisy_positions, action_fn, proportions,
         importance_method=importance_method, mc_iterations=mc_iterations,
-        protected_test=protected_test,
+        protected_test=protected_test, X_val=X_val, y_val=y_val,
     )
     rnd_acc_mean, rnd_acc_std, rnd_dp_mean, rnd_dp_std = clean_random(
         pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
@@ -79,6 +80,7 @@ def _run_methods(pipeline_factory: Callable, X_train_noisy, y_train_noisy, X_tes
     accs_dsf, dps_dsf, dsf_ranked = clean_datascope_fair(
         pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
         noisy_positions, action_fn, proportions, protected_test,
+        X_val=X_val, y_val=y_val, protected_val=protected_val,
     )
     accs_fh, dps_fh, fh_ranked = clean_fair_heuristic(
         pipeline_factory, X_train_noisy, y_train_noisy, X_test, y_test,
@@ -98,21 +100,23 @@ def _run_methods(pipeline_factory: Callable, X_train_noisy, y_train_noisy, X_tes
 def build_noise_bundle_outlier(split, outlier_col_idx: int, noise_level: float,
                                seed: int = 42) -> NoiseBundle:
     """
-    Inject outliers globally before split, then map noisy rows to train positions.
-    """
-    X_full = np.empty((len(split.train_idx) + len(split.test_idx), split.X_train.shape[1]))
-    y_full = np.empty((len(split.train_idx) + len(split.test_idx),), dtype=int)
-    X_full[split.train_idx] = split.X_train
-    X_full[split.test_idx] = split.X_test
-    y_full[split.train_idx] = split.y_train
-    y_full[split.test_idx] = split.y_test
+    Inject outliers globally over the train+val+test pool, then keep only the
+    corrupted rows that fall in the training partition.
 
-    X_noisy_full, global_noisy_positions, cap_value = inject_outlier(
-        X_full, outlier_col_idx, noise_level=noise_level, seed=seed
+    Uses a dense concatenated pool (train rows first) rather than reconstructing
+    by original row index, because val_idx may be a capped subsample (see
+    prepare_fixed_split's val_cap) and therefore train_idx/val_idx/test_idx no
+    longer necessarily partition {0, ..., N-1} densely.
+    """
+    X_pool = np.concatenate([split.X_train, split.X_val, split.X_test], axis=0)
+    n_train = len(split.X_train)
+
+    X_noisy_pool, pool_noisy_positions, cap_value = inject_outlier(
+        X_pool, outlier_col_idx, noise_level=noise_level, seed=seed
     )
-    train_mask = np.isin(split.train_idx, global_noisy_positions)
-    noisy_positions = np.where(train_mask)[0]
-    X_train_noisy = X_noisy_full[split.train_idx]
+    # Rows [0, n_train) of the pool are exactly the training rows, in order.
+    noisy_positions = np.sort(pool_noisy_positions[pool_noisy_positions < n_train])
+    X_train_noisy = X_noisy_pool[:n_train]
     return NoiseBundle(
         X_noisy=X_train_noisy,
         y_noisy=split.y_train.copy(),
@@ -134,6 +138,7 @@ def run_outlier_experiment_with_artifacts(
 
     protected_test = ds.protected_group_mask[split.test_idx]
     protected_train = ds.protected_group_mask[split.train_idx]
+    protected_val = ds.protected_group_mask[split.val_idx]
     baseline, baseline_dp = _baseline_eval(
         pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test,
         protected_test,
@@ -145,6 +150,7 @@ def run_outlier_experiment_with_artifacts(
         split.X_test, split.y_test,
         bundle.noisy_positions, cap_fn, proportions, protected_test, protected_train,
         importance_method=importance_method, mc_iterations=mc_iterations,
+        X_val=split.X_val, y_val=split.y_val, protected_val=protected_val,
     )
     ds_ranked = results["datascope"]["ranked"]
     cl_ranked = results["cleanlab"]["ranked"]
@@ -220,6 +226,7 @@ def run_random_label_experiment_with_artifacts(
     )
     protected_test = ds.protected_group_mask[split.test_idx]
     protected_train = ds.protected_group_mask[split.train_idx]
+    protected_val = ds.protected_group_mask[split.val_idx]
     baseline, baseline_dp = _baseline_eval(
         pipeline_factory, bundle.X_noisy, bundle.y_noisy, split.X_test, split.y_test,
         protected_test,
@@ -231,6 +238,7 @@ def run_random_label_experiment_with_artifacts(
         split.X_test, split.y_test,
         bundle.noisy_positions, restore_fn, proportions, protected_test, protected_train,
         importance_method=importance_method, mc_iterations=mc_iterations,
+        X_val=split.X_val, y_val=split.y_val, protected_val=protected_val,
     )
     ds_ranked = results["datascope"]["ranked"]
     cl_ranked = results["cleanlab"]["ranked"]
@@ -285,6 +293,7 @@ def run_nnar_experiment_with_artifacts(
 ) -> ExperimentArtifacts:
     split = prepare_fixed_split(ds.X, ds.y)
     protected_train = ds.protected_group_mask[split.train_idx]
+    protected_val = ds.protected_group_mask[split.val_idx]
     y_noisy, noisy_positions = inject_nnar(
         split.y_train, protected_train, noise_level=noise_level, seed=seed
     )
@@ -306,6 +315,7 @@ def run_nnar_experiment_with_artifacts(
         split.X_test, split.y_test,
         bundle.noisy_positions, restore_fn, proportions, protected_test, protected_train,
         importance_method=importance_method, mc_iterations=mc_iterations,
+        X_val=split.X_val, y_val=split.y_val, protected_val=protected_val,
     )
     ds_ranked = results["datascope"]["ranked"]
     cl_ranked = results["cleanlab"]["ranked"]
@@ -360,6 +370,7 @@ def run_mnar_experiment_with_artifacts(
 ) -> ExperimentArtifacts:
     split = prepare_fixed_split(ds.X, ds.y)
     protected_train = ds.protected_group_mask[split.train_idx]
+    protected_val = ds.protected_group_mask[split.val_idx]
     X_noisy, noisy_positions = inject_mnar(
         split.X_train, protected_train, [ds.outlier_col_idx], noise_level=noise_level, seed=seed
     )
@@ -382,6 +393,7 @@ def run_mnar_experiment_with_artifacts(
         split.X_test, split.y_test,
         bundle.noisy_positions, remove_fn, proportions, protected_test, protected_train,
         importance_method=importance_method, mc_iterations=mc_iterations,
+        X_val=split.X_val, y_val=split.y_val, protected_val=protected_val,
     )
     ds_ranked = results["datascope"]["ranked"]
     cl_ranked = results["cleanlab"]["ranked"]

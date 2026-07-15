@@ -8,13 +8,21 @@ import numpy as np
 
 @dataclass
 class PreparedSplit:
-    """Fixed train/test split plus indices for traceability."""
+    """Fixed train/validation/test split plus indices for traceability.
+
+    X_val/y_val is a held-out slice distinct from X_test/y_test, used only to
+    score the DataScope Shapley utility function so that ranking is never
+    informed by the same data used for final accuracy/DP reporting.
+    """
     X_train: np.ndarray
     X_test: np.ndarray
     y_train: np.ndarray
     y_test: np.ndarray
     train_idx: np.ndarray
     test_idx: np.ndarray
+    X_val: np.ndarray = None
+    y_val: np.ndarray = None
+    val_idx: np.ndarray = None
 
 
 @dataclass
