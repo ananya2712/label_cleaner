@@ -32,11 +32,12 @@ import matplotlib.pyplot as plt
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-RUNS = [
-    {"dataset": "adult",   "noise_level": 0.20, "run_dir": REPO_ROOT / "artifacts" / "run_v7" / "adult_20pct"},
-    {"dataset": "german",  "noise_level": 0.20, "run_dir": REPO_ROOT / "artifacts" / "run_v7" / "german_20pct"},
-    {"dataset": "titanic", "noise_level": 0.20, "run_dir": REPO_ROOT / "artifacts" / "run_v7" / "titanic_20pct"},
-]
+# Defaults; overridable via --run/--suffix/--noise-level (see main).
+RUN_NAME    = "run_v10"
+RUN_SUFFIX  = "20pct"
+NOISE_LEVEL = 0.20
+
+RUNS: list = []  # populated in main() from the settings above
 
 NOISE_TYPES = ["outlier", "rnd_label", "nnar", "mnar"]
 PIPELINES   = ["p1a", "p2b"]
@@ -60,8 +61,7 @@ STYLES = {
     "random_mean": "--",
 }
 
-OUTPUT_DIR = REPO_ROOT / "artifacts" / "run_v7" / "combined_report"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR: Path = None  # set in main() from RUN_NAME
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -338,6 +338,25 @@ def _plot_dataset_grid_dp(dataset: str, noise_level: float, run_dir: Path,
 # ── Report assembly ───────────────────────────────────────────────────────────
 
 def main() -> int:
+    global RUNS, OUTPUT_DIR
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run", default=RUN_NAME,
+                        help="Run folder name under artifacts/ (default: %(default)s)")
+    parser.add_argument("--suffix", default=RUN_SUFFIX,
+                        help="Per-dataset dir suffix, e.g. 20pct (default: %(default)s)")
+    parser.add_argument("--noise-level", type=float, default=NOISE_LEVEL,
+                        help="Noise level for figure titles (default: %(default)s)")
+    args = parser.parse_args()
+
+    RUNS = [
+        {"dataset": ds, "noise_level": args.noise_level,
+         "run_dir": REPO_ROOT / "artifacts" / args.run / f"{ds}_{args.suffix}"}
+        for ds in ["adult", "german", "titanic"]
+    ]
+    OUTPUT_DIR = REPO_ROOT / "artifacts" / args.run / "combined_report"
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
     # Load all curves
     all_curves: dict = {}
     for run in RUNS:
@@ -382,9 +401,9 @@ def main() -> int:
         "",
         "| Dataset | Noise Level | Train rows (approx) | Protected attribute |",
         "| --- | --- | --- | --- |",
-        "| Adult   | 20% | ~26 000 | Sex (Female) |",
-        "| German  | 20% | ~800    | personal_status (female codes) |",
-        "| Titanic | 20% | ~712    | Sex (female) |",
+        f"| Adult   | {int(args.noise_level * 100)}% | ~23 000 | Sex (Female) |",
+        f"| German  | {int(args.noise_level * 100)}% | ~700    | personal_status (female codes) |",
+        f"| Titanic | {int(args.noise_level * 100)}% | ~623    | Sex (female) |",
         "",
         "**Pipelines:** p1a (KNN-preprocessor + LogReg), p2b (PCA + SelectKBest + LogReg)",
         "",

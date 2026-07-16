@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate reduced outlier figures from existing run_v8 caches.
+Generate reduced outlier figures from an existing run's caches (default run_v10).
 
 Plots only DataScope (2σ capping), DataScope (removal), and the noisy
 baseline — no other methods. No experiments are run; all values come from
@@ -36,11 +36,14 @@ import matplotlib.pyplot as plt
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-RUN_DIR   = REPO_ROOT / "artifacts" / "run_v8"
+# Defaults; overridable via --run/--suffix (see main).
+RUN_NAME   = "run_v10"
+RUN_SUFFIX = "20pct"
 DATASETS  = ["adult", "german", "titanic"]
 PIPELINES = ["p1a", "p2b"]
 
-OUTPUT_DIR = RUN_DIR / "outlier_focus"
+RUN_DIR: Path = None     # set in main()
+OUTPUT_DIR: Path = None  # set in main()
 
 SERIES = [
     ("datascope",         "DataScope (2σ capping)", "#1f77b4"),
@@ -49,7 +52,7 @@ SERIES = [
 
 
 def _load_curves(dataset: str, pipeline: str) -> dict | None:
-    path = (RUN_DIR / f"{dataset}_20pct" / "caches"
+    path = (RUN_DIR / f"{dataset}_{RUN_SUFFIX}" / "caches"
             / f"{dataset}__outlier__{pipeline}" / "summary.json")
     if not path.exists():
         print(f"skipping {dataset}/{pipeline}: {path} missing")
@@ -83,6 +86,17 @@ def _draw(ax, c: dict) -> None:
 
 
 def main() -> int:
+    global RUN_NAME, RUN_SUFFIX, RUN_DIR, OUTPUT_DIR
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run", default=RUN_NAME,
+                        help="Run folder name under artifacts/ (default: %(default)s)")
+    parser.add_argument("--suffix", default=RUN_SUFFIX,
+                        help="Per-dataset dir suffix, e.g. 20pct (default: %(default)s)")
+    args = parser.parse_args()
+    RUN_NAME, RUN_SUFFIX = args.run, args.suffix
+    RUN_DIR = REPO_ROOT / "artifacts" / RUN_NAME
+    OUTPUT_DIR = RUN_DIR / "outlier_focus"
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     readme_rows = []
 
@@ -130,7 +144,7 @@ def main() -> int:
                 ax.set_ylabel(f"{pipeline}\nAccuracy", fontsize=8)
             if row == 0:
                 ax.set_title(ds, fontsize=9, fontweight="bold")
-    fig.suptitle("Outlier noise — DataScope capping vs removal (run_v8)", fontsize=10, y=1.01)
+    fig.suptitle(f"Outlier noise — DataScope capping vs removal ({RUN_NAME})", fontsize=10, y=1.01)
     fig.tight_layout()
     grid_out = OUTPUT_DIR / "outlier_focus_grid.png"
     fig.savefig(grid_out, dpi=180, bbox_inches="tight")
@@ -138,10 +152,10 @@ def main() -> int:
     print(f"Saved: {grid_out}")
 
     readme = [
-        "# Outlier Focus Figures (run_v8)",
+        f"# Outlier Focus Figures ({RUN_NAME})",
         "",
         "Reduced view: DataScope (2σ capping), DataScope (removal), Random (±1σ), baseline.",
-        "Generated from cached run_v8 results — no experiments were re-run.",
+        f"Generated from cached {RUN_NAME} results — no experiments were re-run.",
         "",
         "| dataset | pipeline | baseline | DataScope (2σ capping) | DataScope (removal) | Random |",
         "| --- | --- | --- | --- | --- | --- |",
