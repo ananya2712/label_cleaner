@@ -363,6 +363,7 @@ def clean_entropy(
     proportions: np.ndarray,
     n_jobs: int = 1,
     protected_test: Optional[np.ndarray] = None,
+    max_proportion: float = 1.0,
 ) -> Tuple[List[float], List[float], np.ndarray]:
     """
     Entropy-based cleaning: rank ALL training samples by the Shannon entropy
@@ -385,6 +386,16 @@ def clean_entropy(
     proportions      : array of fractions in [0, 1]
     n_jobs           : parallelism for cross_val_predict (default 1 for safety)
     protected_test   : bool mask over test rows for demographic parity measurement
+    max_proportion   : caps the effective fraction of ent_ranked ever acted on.
+                       Entropy ranks the ENTIRE training set (unlike DataScope,
+                       which only ranks the ground-truth noisy subset), so with
+                       a removal-type action_fn (e.g. MNAR), proportions[-1]=1.0
+                       would remove every training row, including clean ones,
+                       and _safe_eval would correctly report NaN for the
+                       resulting empty training set. Capping below 1.0 keeps
+                       that boundary point meaningful for removal actions;
+                       harmless for correction actions (restore/cap), which
+                       never destroy data regardless of proportion.
 
     Returns
     -------
@@ -402,7 +413,7 @@ def clean_entropy(
 
     accs, dps = [], []
     for p in proportions:
-        n_clean   = int(p * len(ent_ranked))
+        n_clean   = int(min(p, max_proportion) * len(ent_ranked))
         X_c, y_c  = action_fn(X_train, y_train, ent_ranked[:n_clean])
         acc, dp = _safe_eval(pipeline_factory, X_c, y_c, X_test, y_test, protected_test)
         accs.append(acc)
@@ -515,6 +526,22 @@ def action_remove() -> Callable:
         keep = np.ones(len(X_tr), dtype=bool)
         keep[positions] = False
         return X_tr[keep], y_tr[keep]
+    return _action
+
+
+def action_flip() -> Callable:
+    """
+    Returns an action_fn that flips the binary label (1 - y) at given
+    positions. Use for the no-noise sensitivity control: applying each
+    method's top-ranked "cleaning" action to an already-clean training set
+    measures the false-positive cost of that ranking (there is no true noise
+    to correct, so any accuracy drop comes purely from mis-flagging good rows).
+    """
+    def _action(X_tr, y_tr, positions):
+        y_c = y_tr.copy()
+        if len(positions) > 0:
+            y_c[positions] = 1 - y_c[positions]
+        return X_tr.copy(), y_c
     return _action
 
 

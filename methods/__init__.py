@@ -7,6 +7,7 @@ from .cleaning import (
     clean_cleanlab,
     clean_fair_heuristic,
     action_cap,
+    action_flip,
     action_remove,
     action_restore_labels,
 )
@@ -17,6 +18,6 @@ __all__ = [
     "make_pipeline_a", "make_pipeline_b",
     "clean_datascope", "clean_datascope_fair", "clean_random", "clean_cleanlab",
     "clean_fair_heuristic",
-    "action_cap", "action_remove", "action_restore_labels",
+    "action_cap", "action_flip", "action_remove", "action_restore_labels",
     "demographic_parity_gap",
 ]

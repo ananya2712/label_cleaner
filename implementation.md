@@ -6,6 +6,9 @@
 Each method ranks training samples by how harmful they are, then incrementally
 applies a noise-type-specific **action** (correct label, cap feature, remove row)
 and measures test-set classification accuracy at each cleaning proportion from 0% to 100%.
+DataScope's Shapley utility is scored against a dedicated held-out validation split
+(distinct from the final test split) so its ranking is never informed by the same
+data used for final accuracy/DP reporting — see `core/prep.py: prepare_fixed_split`.
 
 The benchmark covers three real-world datasets, four noise types, two model pipelines,
 and three active cleaning methods — DataScope, CleanLab, and a random-order baseline —
@@ -30,7 +33,7 @@ their code exists only as disabled stubs in `methods/cleaning.py`.
 
 | Noise type | What is corrupted | Action applied at cleaning time |
 |---|---|---|
-| **Outlier** | One feature column — values overwritten with a fixed extreme constant (100) for a random fraction of rows | Cap at 2-sigma of the clean distribution |
+| **Outlier** | One feature column — values overwritten with a per-row, scale-aware extreme (mean + k·σ, k ~ Uniform(3,5)) for a random fraction of rows | Cap at 2-sigma of the clean distribution |
 | **Random label** | Labels flipped uniformly at random to any other class | Restore original ground-truth label |
 | **NNAR** (Noise Not At Random) | Labels of a random fraction of the protected subgroup are flipped — noise rate depends on group membership, not on the label value itself | Restore original ground-truth label |
 | **MNAR** (Missing Not At Random) | Feature values of a random fraction of the protected subgroup are set to NaN — data absence is correlated with a sensitive attribute, simulating differential data-collection quality | Remove the detected row (the missing feature value cannot be recovered) |
@@ -57,9 +60,9 @@ The default uses `ImportanceMethod.NEIGHBOR` — a KNN approximation that avoids
 
 **Implementation details (`methods/cleaning.py: clean_datascope`):**
 1. Fit the full pipeline on the noisy training set
-2. Compute Shapley importances via `ShapleyImportance(method=NEIGHBOR).fit(X_train).score(X_test)`
+2. Compute Shapley importances via `ShapleyImportance(method=NEIGHBOR).fit(X_train).score(X_val)` — scored against the held-out validation split, not the test split (see note above; this was a test-set leak in earlier runs, fixed in `prepare_fixed_split`)
 3. Sort noisy positions by ascending Shapley importance (lowest = most harmful first)
-4. Incrementally apply `action_fn` to the top-k% and measure accuracy
+4. Incrementally apply `action_fn` to the top-k% and measure accuracy on the untouched test split
 
 **Strengths:**
 - Theoretically grounded — the only method with axiomatic fairness guarantees
@@ -404,8 +407,10 @@ The Auto-Hybrid places third overall, behind Kairos and CL-Adaptive. Its primary
 ```
 label_cleaner/
 ├── core/
-│   ├── models.py        # MethodCurves, ExperimentArtifacts, NoiseBundle dataclasses
-│   └── prep.py          # Fixed 80/20 stratified train/test split
+│   ├── models.py        # MethodCurves, ExperimentArtifacts, NoiseBundle, PreparedSplit dataclasses
+│   └── prep.py          # Fixed train/validation/test split (80/10/20-ish; val capped at
+│                         # val_cap rows). Val is used only to score the DataScope Shapley
+│                         # utility, kept separate from the test split used for final metrics.
 ├── data/
 │   └── datasets.py      # Dataset loaders and DatasetInfo (adult, german, titanic)
 ├── methods/

@@ -1,0 +1,22 @@
+# Pinned so a fresh environment reproduces run_v10/run_v11 without the
+# numpy 2.x / datascope Cython-extension binary-incompatibility crash
+# discovered when setting these experiments up.
+#
+# Install with:
+#   pip install -r requirements.txt
+#   pip install datascope --no-deps
+#
+# datascope is installed separately with --no-deps: its zerorpc/gevent
+# RPC-server extras compile from source and are not needed for this
+# codebase (only ShapleyImportance is used), and gevent's build can hang
+# or fail on some machines. Everything datascope actually needs at
+# runtime (numpy, scipy, joblib, tqdm, msgpack) is already pinned above.
+numpy<2
+scipy
+scikit-learn
+pandas
+cleanlab
+matplotlib
+joblib
+tqdm
+msgpack

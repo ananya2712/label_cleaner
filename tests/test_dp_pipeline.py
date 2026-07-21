@@ -31,10 +31,11 @@ def test_nnar_titanic_dp_curves():
     assert c.baseline_dp is not None and 0.0 <= c.baseline_dp <= 1.0
     # At 0% cleaned, every method's DP equals the baseline DP.
     assert abs(c.datascope_dp[0] - c.baseline_dp) < 1e-9
-    # NOTE: no directional assertion on the DP gap. On titanic, NNAR cleaning
-    # RESTORES the true (larger) group disparity — the noisy model scores
-    # fairer by DP than the clean one. Direction of DP change is an empirical
-    # result reported from benchmark runs, not a wiring invariant.
+    # NOTE: no directional assertion on the DP gap. Whether NNAR cleaning
+    # widens or narrows the DP gap is dataset-dependent (e.g. it widens on
+    # Adult/German but narrows on Titanic under the fixed val/test split —
+    # see run_v10). Direction of DP change is an empirical result reported
+    # from benchmark runs, not a wiring invariant.
 
 
 if __name__ == "__main__":

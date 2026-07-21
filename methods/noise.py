@@ -17,7 +17,8 @@ import numpy as np
 
 
 def inject_outlier(X: np.ndarray, col_idx: int, noise_level: float,
-                   k_range: tuple = (3.0, 5.0), seed: int = 42):
+                   k_range: tuple = (3.0, 5.0), seed: int = 42,
+                   stats_X: np.ndarray = None):
     """
     Inject scale-aware high-side extremes into `col_idx` for a uniformly
     random fraction of rows — no demographic targeting (MAR).
@@ -32,6 +33,10 @@ def inject_outlier(X: np.ndarray, col_idx: int, noise_level: float,
     noise_level : fraction of ALL rows to corrupt
     k_range     : (low, high) bounds for the per-row sigma multiplier
     seed        : random seed
+    stats_X     : array whose `col_idx` column supplies mean/σ for the extreme
+                  values and cap. Defaults to `X` itself; pass a train-only
+                  array when `X` is a pooled train+val+test array, so the
+                  injected extremes and cap don't leak test-set statistics.
 
     Returns
     -------
@@ -43,8 +48,10 @@ def inject_outlier(X: np.ndarray, col_idx: int, noise_level: float,
     n_noisy  = int(noise_level * len(X))
     noisy_positions = rng.choice(len(X), n_noisy, replace=False)
 
-    mean_x    = np.nanmean(X[:, col_idx])
-    std_x     = np.nanstd(X[:, col_idx])
+    if stats_X is None:
+        stats_X = X
+    mean_x    = np.nanmean(stats_X[:, col_idx])
+    std_x     = np.nanstd(stats_X[:, col_idx])
     cap_value = mean_x + 2 * std_x
 
     k = rng.uniform(k_range[0], k_range[1], size=n_noisy)
